@@ -2,7 +2,8 @@
 import React from "react";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
-// Note: MobileTabBar and MobileDrawer will be added here in full production implementation
+import { MobileTabBar } from "./MobileTabBar";
+import { MobileDrawer } from "./MobileDrawer";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -14,8 +15,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </div>
-      {/* <MobileTabBar /> */}
-      {/* <MobileDrawer /> */}
+      <MobileTabBar />
+      <MobileDrawer />
     </div>
   );
 }
