@@ -5,8 +5,9 @@ import { SectionTitle } from "@/components/ui/SectionTitle";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { PulseTrace } from "@/components/ui/PulseTrace";
-import { ChevronDown, PlayCircle } from "lucide-react";
+import { ChevronDown, PlayCircle, Sparkles } from "lucide-react";
 
+// Keeping the mock calls just for visual schema presentation until Retell is wired
 const CALLS = [
   { id: 1, contact: "Sarah Okafor", phone: "(415) 555-0132", duration: "4:12", time: "Today, 2:04 PM", sentiment: "positive", outcome: "Booked consult", summary: "Caller asked about Botox pricing for repeat clients. AI receptionist quoted the loyalty tier and booked a Thursday 2pm consult.", transcript: [["Caller", "Hi, do you still have that returning-client discount on Botox?"], ["Agent", "Yes — returning clients get 15% off through the end of the month. Would you like me to check Thursday availability?"]] },
   { id: 2, contact: "Linda Osei", phone: "(707) 555-0119", duration: "0:38", time: "Today, 1:10 PM", sentiment: "negative", outcome: "No action taken", summary: "Call dropped after 38 seconds; caller sounded frustrated about hold time before connecting.", transcript: [["Caller", "I've been trying to reach someone all morning..."], ["Agent", "I'm sorry about that — I can help right now. What can I book for you?"]] }
@@ -19,7 +20,16 @@ export default function CallsPage() {
     <AppLayout>
       <div className="p-4 md:p-8 max-w-5xl mx-auto">
         <SectionTitle eyebrow="Bloom Aesthetics MedSpa" title="Call intelligence" />
-        <div className="space-y-3">
+        
+        {/* The Disclaimer Banner */}
+        <div className="rounded-xl p-4 mb-6 flex items-start gap-2 bg-amberSoft border border-amber">
+          <Sparkles size={15} className="text-amber flex-shrink-0 mt-0.5" />
+          <span className="text-xs text-ink600 font-body">
+            Inbound Call Intelligence activates once the Retell AI Voice integration is live. This page demonstrates the layout and AI transcript summarization schema. Data shown is a placeholder.
+          </span>
+        </div>
+
+        <div className="space-y-3 opacity-80 pointer-events-none">
           {CALLS.map((call) => {
             const open = expanded === call.id;
             return (

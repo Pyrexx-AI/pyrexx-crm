@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Instrument_Serif, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
+import { AuthProvider } from "@/components/providers/AuthProvider";
 
 const instrumentSerif = Instrument_Serif({
   weight: "400",
@@ -26,17 +27,13 @@ export const metadata: Metadata = {
   description: "Intelligent CRM and Agent Proxy for Healthcare and MedSpas",
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body
-        className={`${instrumentSerif.variable} ${ibmPlexSans.variable} ${ibmPlexMono.variable} font-body bg-paper text-ink antialiased`}
-      >
-        {children}
+      <body className={`${instrumentSerif.variable} ${ibmPlexSans.variable} ${ibmPlexMono.variable} font-body bg-paper text-ink antialiased`}>
+        <AuthProvider>
+          {children}
+        </AuthProvider>
       </body>
     </html>
   );

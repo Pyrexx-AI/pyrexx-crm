@@ -4,11 +4,12 @@ import { DndContext, DragEndEvent, closestCorners } from "@dnd-kit/core";
 import { PipelineColumn } from "./PipelineColumn";
 import { createClient } from "@/lib/supabase";
 import { useAppStore } from "@/store/useAppStore";
-import { toast } from "sonner";
 import { SectionTitle } from "@/components/ui/SectionTitle";
 import { Button } from "@/components/ui/Button";
 import { Plus } from "lucide-react";
 import { DealFormModal } from "./DealFormModal";
+import { NextActionModal } from "./NextActionModal";
+import { toast } from "sonner";
 
 const STAGES = ["New Lead", "Demo Scheduled", "Proposal Sent", "Contract Sent", "Onboarding", "Active Client"];
 
@@ -16,7 +17,10 @@ export function PipelineBoard() {
   const supabase = createClient();
   const { activeOrgId, currentWorkspace } = useAppStore();
   const [deals, setDeals] = useState<any[]>([]);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isDealModalOpen, setIsDealModalOpen] = useState(false);
+  
+  // State to hold the interrupted drag event for Enforced Workflows
+  const [pendingMove, setPendingMove] = useState<{ dealId: string, contactId: string, newStage: string, prevStage: string } | null>(null);
 
   const fetchDeals = async () => {
     if (!activeOrgId) return;
@@ -32,37 +36,40 @@ export function PipelineBoard() {
     fetchDeals();
   }, [activeOrgId]);
 
-  const handleDragEnd = async (event: DragEndEvent) => {
+  const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
-    if (!over) return; // Dropped outside a valid column
+    if (!over) return;
 
     const dealId = active.id as string;
-    const currentStage = active.data.current?.stage;
+    const dealData = active.data.current?.deal;
+    const currentStage = dealData.stage;
     const newStage = over.id as string;
 
-    if (currentStage === newStage) return; // Dropped in the same column
+    if (currentStage === newStage) return;
 
-    // 1. Optimistic UI Update
-    setDeals(prevDeals => 
-      prevDeals.map(d => d.id === dealId ? { ...d, stage: newStage } : d)
-    );
+    // 1. Optimistic UI Update (Snap immediately to new column for snappy UX)
+    setDeals(prev => prev.map(d => d.id === dealId ? { ...d, stage: newStage } : d));
 
-    // 2. Persist to Supabase
-    const { error } = await supabase
-      .from("deals")
-      .update({ stage: newStage, updated_at: new Date().toISOString() })
-      .eq("id", dealId);
+    // 2. Intercept and Enforce Next Action
+    setPendingMove({ 
+      dealId, 
+      contactId: dealData.contact_id, 
+      newStage, 
+      prevStage: currentStage 
+    });
+  };
 
-    if (error) {
-      toast.error("Failed to update deal stage");
-      fetchDeals(); // Revert to source of truth on failure
-    } else {
-      // If deal hits Active Client, trigger Sub-Account provision logic (Stubbed here for Phase 4)
-      if (newStage === "Active Client") {
-        toast.success("Deal Won! Sub-account provisioning triggered.");
-        // We will wire the org creation trigger here in the next phase
-      }
+  const handleCancelMove = () => {
+    // Rollback the optimistic update
+    if (pendingMove) {
+      setDeals(prev => prev.map(d => d.id === pendingMove.dealId ? { ...d, stage: pendingMove.prevStage } : d));
+      setPendingMove(null);
     }
+  };
+
+  const handleConfirmMove = () => {
+    setPendingMove(null);
+    fetchDeals(); // Re-sync with database to grab the updated next_action
   };
 
   const openValue = deals
@@ -80,13 +87,12 @@ export function PipelineBoard() {
               <span className="hidden sm:inline-block text-sm text-slate font-mono font-medium bg-paperDim px-3 py-1.5 rounded-lg border border-line">
                 Pipeline Value: <span className="text-ink">${openValue.toLocaleString()}</span>
               </span>
-              <Button icon={Plus} onClick={() => setIsModalOpen(true)}>New Deal</Button>
+              <Button icon={Plus} onClick={() => setIsDealModalOpen(true)}>New Deal</Button>
             </div>
           } 
         />
       </div>
 
-      {/* The Kanban Board Scroll Area */}
       <div className="flex-1 overflow-x-auto overflow-y-hidden px-4 md:px-8 pb-4">
         <div className="flex gap-4 md:gap-6 h-full snap-x snap-mandatory md:snap-none w-max">
           <DndContext collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
@@ -101,11 +107,18 @@ export function PipelineBoard() {
         </div>
       </div>
 
-      <DealFormModal 
-        isOpen={isModalOpen} 
-        onClose={() => setIsModalOpen(false)} 
-        onSuccess={fetchDeals} 
-      />
+      <DealFormModal isOpen={isDealModalOpen} onClose={() => setIsDealModalOpen(false)} onSuccess={fetchDeals} />
+      
+      {pendingMove && (
+        <NextActionModal 
+          isOpen={true}
+          dealId={pendingMove.dealId}
+          contactId={pendingMove.contactId}
+          newStage={pendingMove.newStage}
+          onCancel={handleCancelMove}
+          onSuccess={handleConfirmMove}
+        />
+      )}
     </div>
   );
 }
