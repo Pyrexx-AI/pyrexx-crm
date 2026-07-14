@@ -24,9 +24,9 @@ const config: Config = {
         slate: "#6B6E77",
       },
       fontFamily: {
-        display: ["'Instrument Serif'", "serif"],
-        body: ["'IBM Plex Sans'", "sans-serif"],
-        mono: ["'IBM Plex Mono'", "monospace"],
+        display: ["var(--font-display)"],
+        body: ["var(--font-body)"],
+        mono: ["var(--font-mono)"],
       },
       boxShadow: {
         card: "0px 2px 4px rgba(19, 20, 27, 0.04)",
