@@ -44,10 +44,14 @@ The content is organized as follows:
 .gitignore
 next-env.d.ts
 package.json
+postcss.config.js
 README.md
 src/app/accounts/page.tsx
+src/app/api/email/inbound/route.ts
 src/app/api/email/send/route.ts
+src/app/auth/login/page.tsx
 src/app/calls/page.tsx
+src/app/contacts/[id]/page.tsx
 src/app/contacts/page.tsx
 src/app/dialer/page.tsx
 src/app/globals.css
@@ -63,17 +67,21 @@ src/components/features/contacts/ContactsTable.tsx
 src/components/features/contacts/CsvImportModal.tsx
 src/components/features/inbox/InboxThread.tsx
 src/components/features/pipeline/DealFormModal.tsx
+src/components/features/pipeline/NextActionModal.tsx
 src/components/features/pipeline/PipelineBoard.tsx
 src/components/features/pipeline/PipelineCard.tsx
 src/components/features/pipeline/PipelineColumn.tsx
+src/components/features/tasks/TaskFormModal.tsx
 src/components/layout/AppLayout.tsx
 src/components/layout/MobileDrawer.tsx
 src/components/layout/MobileTabBar.tsx
 src/components/layout/Sidebar.tsx
 src/components/layout/Topbar.tsx
+src/components/providers/AuthProvider.tsx
 src/components/ui/Avatar.tsx
 src/components/ui/Badge.tsx
 src/components/ui/Button.tsx
+src/components/ui/CommandPalette.tsx
 src/components/ui/Input.tsx
 src/components/ui/Modal.tsx
 src/components/ui/PulseTrace.tsx
@@ -82,7 +90,9 @@ src/components/ui/StatCard.tsx
 src/lib/email/EmailProvider.ts
 src/lib/email/ResendProvider.ts
 src/lib/supabase.ts
+src/lib/supabase/server.ts
 src/lib/utils.ts
+src/middleware.ts
 src/store/useAppStore.ts
 tailwind.config.ts
 tsconfig.json
@@ -192,6 +202,15 @@ node_modules/
     "tailwindcss": "^3.3.0",
     "typescript": "^5"
   }
+}
+</file>
+
+<file path="postcss.config.js">
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
 }
 </file>
 
@@ -306,6 +325,100 @@ export default function AccountsPage() {
 }
 </file>
 
+<file path="src/app/api/email/inbound/route.ts">
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+
+// Uses Service Role to safely write to DB from an external webhook
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export async function POST(req: Request) {
+  try {
+    const payload = await req.json();
+
+    // Resend's inbound webhook shape: { type: 'email.received', data: { to: '...', from: '...', subject: '...', text: '...' } }
+    // Note: Some parsers send raw JSON directly. We handle both.
+    const emailData = payload.data || payload; 
+    const { from, to, subject, text, html } = emailData;
+
+    if (!from || !to) {
+      return NextResponse.json({ error: "Missing to/from addresses" }, { status: 400 });
+    }
+
+    // 1. Extract the organization slug from the "to" address (e.g. bloomspa@app.pyrexxai.com -> bloomspa)
+    const toAddress = Array.isArray(to) ? to[0] : to;
+    const slug = toAddress.split("@")[0].toLowerCase();
+
+    const { data: org } = await supabase.from("organizations").select("id").eq("slug", slug).single();
+    if (!org) return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
+
+    // 2. Extract sender email and find Contact (Create if it's a new inbound inquiry)
+    const senderEmailMatch = from.match(/<(.+)>/);
+    const senderEmail = senderEmailMatch ? senderEmailMatch[1].toLowerCase() : from.toLowerCase();
+    
+    let contactId = null;
+    const { data: existingContact } = await supabase
+      .from("contacts")
+      .select("id")
+      .eq("org_id", org.id)
+      .eq("email", senderEmail)
+      .single();
+
+    if (existingContact) {
+      contactId = existingContact.id;
+    } else {
+      // Auto-create lead for inbound email
+      const { data: newContact } = await supabase.from("contacts").insert({
+        org_id: org.id,
+        first_name: senderEmail.split("@")[0], // Fallback name
+        last_name: "Inquiry",
+        email: senderEmail,
+        type: "lead",
+        stage: "New Lead"
+      }).select("id").single();
+      contactId = newContact!.id;
+    }
+
+    // 3. Find or create Thread
+    let threadId = null;
+    const { data: existingThread } = await supabase
+      .from("threads")
+      .select("id")
+      .eq("org_id", org.id)
+      .eq("contact_id", contactId)
+      .eq("channel", "email")
+      .single();
+
+    if (existingThread) {
+      threadId = existingThread.id;
+    } else {
+      const { data: newThread } = await supabase.from("threads").insert({
+        org_id: org.id,
+        contact_id: contactId,
+        channel: "email",
+        subject: subject || "Inbound Conversation"
+      }).select("id").single();
+      threadId = newThread!.id;
+    }
+
+    // 4. Insert the Message (Our Postgres trigger will auto-update the thread timestamp and unread status)
+    await supabase.from("messages").insert({
+      thread_id: threadId,
+      direction: "inbound",
+      content: text || html || "Empty Message content"
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    console.error("Inbound Webhook Error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+</file>
+
 <file path="src/app/api/email/send/route.ts">
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
@@ -374,79 +487,335 @@ export async function POST(req: Request) {
 }
 </file>
 
-<file path="src/app/calls/page.tsx">
+<file path="src/app/auth/login/page.tsx">
 "use client";
 import React, { useState } from "react";
+import { PulseTrace } from "@/components/ui/PulseTrace";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { createClient } from "@/lib/supabase";
+import { useRouter } from "next/navigation";
+import { toast, Toaster } from "sonner";
+
+export default function LoginPage() {
+  const supabase = createClient();
+  const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) {
+      toast.error("Login failed", { description: error.message });
+      setIsLoading(false);
+    } else {
+      router.push("/");
+    }
+  };
+
+  return (
+    <div className="min-h-screen w-full flex items-center justify-center bg-paperDim p-4">
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-line p-8">
+        <div className="flex flex-col items-center mb-8">
+          <PulseTrace sentiment="positive" size="lg" />
+          <h1 className="font-display text-3xl text-ink mt-4">PyrexxAI</h1>
+          <p className="text-sm text-slate font-body mt-1">Internal Operations System</p>
+        </div>
+
+        <form onSubmit={handleLogin} className="space-y-4">
+          <Input 
+            label="Email Address" 
+            type="email" 
+            placeholder="name@pyrexxai.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
+          <Input 
+            label="Password" 
+            type="password" 
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+          <Button type="submit" className="w-full mt-2" disabled={isLoading}>
+            {isLoading ? "Authenticating..." : "Sign In"}
+          </Button>
+        </form>
+      </div>
+      <Toaster position="top-center" richColors />
+    </div>
+  );
+}
+</file>
+
+<file path="src/app/contacts/[id]/page.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { SectionTitle } from "@/components/ui/SectionTitle";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
-import { PulseTrace } from "@/components/ui/PulseTrace";
-import { ChevronDown, PlayCircle } from "lucide-react";
+import { Button } from "@/components/ui/Button";
+import { ChevronLeft, Mail, Phone, Building2, CheckCircle2, Circle, Edit3 } from "lucide-react";
+import { createClient } from "@/lib/supabase";
+import { useParams, useRouter } from "next/navigation";
+import { useAppStore } from "@/store/useAppStore";
+import { toast, Toaster } from "sonner";
 
-const CALLS = [
-  { id: 1, contact: "Sarah Okafor", phone: "(415) 555-0132", duration: "4:12", time: "Today, 2:04 PM", sentiment: "positive", outcome: "Booked consult", summary: "Caller asked about Botox pricing for repeat clients. AI receptionist quoted the loyalty tier and booked a Thursday 2pm consult.", transcript: [["Caller", "Hi, do you still have that returning-client discount on Botox?"], ["Agent", "Yes — returning clients get 15% off through the end of the month. Would you like me to check Thursday availability?"]] },
-  { id: 2, contact: "Linda Osei", phone: "(707) 555-0119", duration: "0:38", time: "Today, 1:10 PM", sentiment: "negative", outcome: "No action taken", summary: "Call dropped after 38 seconds; caller sounded frustrated about hold time before connecting.", transcript: [["Caller", "I've been trying to reach someone all morning..."], ["Agent", "I'm sorry about that — I can help right now. What can I book for you?"]] }
-];
+export default function ContactDetailPage() {
+  const { id } = useParams();
+  const router = useRouter();
+  const supabase = createClient();
+  const { activeOrgId, userId } = useAppStore();
+  
+  const [contact, setContact] = useState<any>(null);
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [timeline, setTimeline] = useState<any[]>([]);
+  const [noteContent, setNoteContent] = useState("");
+  const [isSavingNote, setIsSavingNote] = useState(false);
 
-export default function CallsPage() {
-  const [expanded, setExpanded] = useState<number | null>(CALLS[0].id);
+  useEffect(() => {
+    if (activeOrgId && id) {
+      fetchData();
+    }
+  }, [activeOrgId, id]);
+
+  const fetchData = async () => {
+    // 1. Fetch Contact Details & associated Deal value
+    const { data: contactData } = await supabase
+      .from("contacts")
+      .select("*, deals(value)")
+      .eq("id", id)
+      .single();
+    
+    if (contactData) {
+      const dealValue = contactData.deals?.reduce((sum: number, d: any) => sum + Number(d.value), 0) || 0;
+      setContact({ ...contactData, total_value: dealValue });
+    }
+
+    // 2. Fetch Open Tasks
+    const { data: tasksData } = await supabase
+      .from("tasks")
+      .select("*")
+      .eq("contact_id", id)
+      .eq("is_completed", false)
+      .order("due_date", { ascending: true });
+    
+    if (tasksData) setTasks(tasksData);
+
+    // 3. Fetch Unified Timeline (Activities)
+    const { data: activities } = await supabase
+      .from("activities")
+      .select("*, users(full_name)")
+      .eq("contact_id", id);
+      
+    // Map to a common timeline interface
+    let mergedTimeline = (activities || []).map(a => ({
+      id: a.id,
+      date: new Date(a.created_at),
+      type: a.type, 
+      content: a.content,
+      actor: a.users?.full_name || "System"
+    }));
+
+    // Sort descending
+    mergedTimeline.sort((a, b) => b.date.getTime() - a.date.getTime());
+    setTimeline(mergedTimeline);
+  };
+
+  const handleSaveNote = async () => {
+    if (!noteContent.trim() || !activeOrgId || !userId) return;
+    setIsSavingNote(true);
+
+    const { error } = await supabase.from("activities").insert({
+      org_id: activeOrgId,
+      contact_id: id,
+      actor_id: userId,
+      type: "note",
+      content: noteContent
+    });
+
+    setIsSavingNote(false);
+    if (error) {
+      toast.error("Failed to save note");
+    } else {
+      toast.success("Note added");
+      setNoteContent("");
+      fetchData(); 
+    }
+  };
+
+  const toggleTask = async (taskId: string) => {
+    setTasks(prev => prev.filter(t => t.id !== taskId)); 
+    await supabase.from("tasks").update({ is_completed: true }).eq("id", taskId);
+    toast.success("Task completed");
+  };
+
+  const handleEmailClick = async () => {
+    if (!activeOrgId || !contact?.id) return;
+
+    const { data: existingThread } = await supabase
+      .from("threads")
+      .select("id")
+      .eq("org_id", activeOrgId)
+      .eq("contact_id", contact.id)
+      .eq("channel", "email")
+      .single();
+
+    if (existingThread) {
+      router.push(`/inbox?threadId=${existingThread.id}`);
+    } else {
+      const { data: newThread, error } = await supabase.from("threads").insert({
+        org_id: activeOrgId,
+        contact_id: contact.id,
+        channel: "email",
+        subject: `Conversation with ${contact.first_name}`
+      }).select("id").single();
+
+      if (!error && newThread) {
+        router.push(`/inbox?threadId=${newThread.id}`);
+      }
+    }
+  };
+
+  if (!contact) return (
+    <AppLayout>
+      <div className="h-full flex items-center justify-center">
+        <div className="animate-spin w-6 h-6 border-2 border-berry border-t-transparent rounded-full" />
+      </div>
+    </AppLayout>
+  );
 
   return (
     <AppLayout>
       <div className="p-4 md:p-8 max-w-5xl mx-auto">
-        <SectionTitle eyebrow="Bloom Aesthetics MedSpa" title="Call intelligence" />
-        <div className="space-y-3">
-          {CALLS.map((call) => {
-            const open = expanded === call.id;
-            return (
-              <div key={call.id} className="rounded-xl overflow-hidden bg-white border border-line shadow-card transition-all">
-                <button 
-                  onClick={() => setExpanded(open ? null : call.id)} 
-                  className="w-full flex items-center gap-3 md:gap-4 px-4 md:px-5 py-4 text-left flex-wrap"
-                >
-                  <Avatar name={call.contact} size={32} />
-                  <div className="flex-1 min-w-[100px]">
-                    <div className="text-sm font-medium text-ink font-body">{call.contact}</div>
-                    <div className="text-xs text-slate font-body">{call.phone} · {call.time}</div>
-                  </div>
-                  <Badge variant="slate">{call.outcome}</Badge>
-                  <PulseTrace sentiment={call.sentiment as any} size="lg" />
-                  <span className="text-sm w-12 text-right text-slate font-mono">{call.duration}</span>
-                  <ChevronDown size={16} className={`text-slate transition-transform ${open ? "rotate-180" : ""}`} />
-                </button>
-                
-                {open && (
-                  <div className="px-4 md:px-5 pb-5 border-t border-line">
-                    <div className="flex items-center gap-2 mt-4 mb-3">
-                      <PlayCircle size={18} className="text-ink" />
-                      <div className="flex-1 flex items-end gap-0.5 h-6">
-                        {Array.from({ length: 40 }).map((_, i) => (
-                          <div key={i} style={{ height: 4 + Math.abs(Math.sin(i * 0.7)) * 18, width: 2, backgroundColor: "#EDECE7", borderRadius: 1 }} />
-                        ))}
+        <button onClick={() => router.back()} className="flex items-center gap-1 text-sm mb-6 text-slate font-body hover:text-ink transition-colors">
+          <ChevronLeft size={15} /> Back
+        </button>
+
+        <div className="flex items-start gap-4 mb-8 flex-wrap">
+          <Avatar name={`${contact.first_name} ${contact.last_name}`} size={64} />
+          <div className="flex-1 min-w-[200px]">
+            <h1 className="font-display text-[32px] text-ink leading-tight">{contact.first_name} {contact.last_name}</h1>
+            <div className="flex items-center gap-2 mt-2 flex-wrap">
+              {contact.company_id && (
+                <span className="flex items-center gap-1 text-sm text-slate font-body">
+                  <Building2 size={13} /> Linked Company
+                </span>
+              )}
+              <Badge variant="slate">{contact.stage}</Badge>
+              {contact.type === 'patient' && <Badge variant="sage">Patient</Badge>}
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" icon={Phone}>Call</Button>
+            <Button variant="outline" icon={Mail} onClick={handleEmailClick}>Email</Button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+          <div className="md:col-span-2 space-y-6">
+            <div className="rounded-xl p-5 bg-white border border-line shadow-sm">
+              <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Contact Details</div>
+              <div className="space-y-3">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate font-body">Email</span>
+                  <span className="text-ink font-body font-medium">{contact.email || "—"}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate font-body">Phone</span>
+                  <span className="text-ink font-mono font-medium">{contact.phone || "—"}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate font-body">Total Pipeline Value</span>
+                  <span className="text-ink font-mono font-medium text-sage">${contact.total_value.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl p-5 bg-white border border-line shadow-sm">
+              <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Open Tasks</div>
+              {tasks.length === 0 ? (
+                <div className="text-sm text-slate font-body">No open tasks.</div>
+              ) : (
+                <div className="space-y-3">
+                  {tasks.map(t => (
+                    <div key={t.id} className="flex items-start gap-2.5">
+                      <button onClick={() => toggleTask(t.id)} className="mt-0.5 text-slate hover:text-sage transition-colors">
+                        <Circle size={15} />
+                      </button>
+                      <div>
+                        <div className="text-sm text-ink font-body font-medium leading-tight">{t.title}</div>
+                        <div className="text-[10px] text-berry font-mono mt-0.5">Due: {new Date(t.due_date).toLocaleDateString()}</div>
                       </div>
                     </div>
-                    <div className="rounded-lg p-3 mb-3 bg-amberSoft">
-                      <div className="text-xs uppercase mb-1 text-amber tracking-[0.05em] font-body">AI summary</div>
-                      <div className="text-sm text-ink600 font-body">{call.summary}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="md:col-span-3 flex flex-col h-full">
+            <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Activity Timeline</div>
+            
+            <div className="rounded-xl p-4 bg-white border border-line shadow-sm mb-6 flex flex-col gap-3">
+              <textarea
+                value={noteContent}
+                onChange={(e) => setNoteContent(e.target.value)}
+                placeholder="Log a note..."
+                className="w-full text-sm outline-none resize-none font-body text-ink placeholder:text-slate bg-transparent h-16"
+              />
+              <div className="flex justify-between items-center border-t border-line pt-3">
+                <div className="flex gap-2 text-slate">
+                  <button className="hover:text-ink"><Edit3 size={15} /></button>
+                </div>
+                <Button onClick={handleSaveNote} disabled={isSavingNote || !noteContent.trim()}>
+                  {isSavingNote ? "Saving..." : "Save Note"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="relative pl-6 flex-1">
+              <div className="absolute left-[11px] top-2 bottom-0 w-px bg-line" />
+              
+              {timeline.map((item, idx) => (
+                <div key={idx} className="relative mb-6">
+                  <div className="absolute -left-6 top-1 w-5 h-5 rounded-full flex items-center justify-center bg-paperDim border border-line z-10">
+                    {item.type === 'note' ? <Edit3 size={10} className="text-slate" /> : <CheckCircle2 size={10} className="text-berry" />}
+                  </div>
+                  
+                  <div className="rounded-xl p-4 bg-white border border-line shadow-sm">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-sm font-medium text-ink font-body">
+                        {item.type === 'note' ? `${item.actor} left a note` : "Stage Change"}
+                      </span>
+                      <span className="text-[10px] text-slate font-mono">
+                        {item.date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                      </span>
                     </div>
-                    <div className="text-xs uppercase mb-2 text-slate tracking-[0.05em] font-body">Transcript</div>
-                    <div className="space-y-2">
-                      {call.transcript.map((line, i) => (
-                        <div key={i} className="text-sm font-mono text-ink">
-                          <span className={`font-semibold ${line[0] === "Agent" ? "text-berry" : "text-slate"}`}>
-                            {line[0]}: 
-                          </span> {line[1]}
-                        </div>
-                      ))}
+                    <div className="text-sm text-ink600 font-body whitespace-pre-wrap leading-relaxed">
+                      {item.content}
                     </div>
                   </div>
-                )}
-              </div>
-            );
-          })}
+                </div>
+              ))}
+              
+              {timeline.length === 0 && (
+                <div className="text-sm text-slate font-body ml-2">No activity recorded yet.</div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
+      <Toaster position="top-right" richColors />
     </AppLayout>
   );
 }
@@ -662,307 +1031,6 @@ export default function DialerPage() {
 }
 </file>
 
-<file path="src/app/inbox/page.tsx">
-"use client";
-import React, { useState, useEffect } from "react";
-import { AppLayout } from "@/components/layout/AppLayout";
-import { Avatar } from "@/components/ui/Avatar";
-import { Mail, MessageSquare } from "lucide-react";
-import { createClient } from "@/lib/supabase";
-import { useAppStore } from "@/store/useAppStore";
-import { InboxThread } from "@/components/features/inbox/InboxThread";
-
-export default function InboxPage() {
-  const supabase = createClient();
-  const { activeOrgId, currentWorkspace } = useAppStore();
-  const [threads, setThreads] = useState<any[]>([]);
-  const [activeThread, setActiveThread] = useState<any | null>(null);
-  const [orgSlug, setOrgSlug] = useState("");
-  const [userId, setUserId] = useState("");
-
-  useEffect(() => {
-    const init = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) setUserId(user.id);
-      
-      if (activeOrgId) {
-        // Get Org Slug for email dispatch
-        const { data: org } = await supabase.from("organizations").select("slug").eq("id", activeOrgId).single();
-        if (org) setOrgSlug(org.slug);
-
-        // Get Threads
-        const { data: t } = await supabase
-          .from("threads")
-          .select(`*, contacts(first_name, last_name, email)`)
-          .eq("org_id", activeOrgId)
-          .order("updated_at", { ascending: false });
-        if (t) setThreads(t);
-      }
-    };
-    init();
-  }, [activeOrgId]);
-
-  return (
-    <AppLayout>
-      <div className="flex h-full w-full absolute inset-0 pt-[65px] md:pt-[73px]"> {/* Offset for Topbar */}
-        
-        {/* Sidebar (List of threads) */}
-        <div 
-          className={`w-full md:w-80 flex-shrink-0 border-r border-line bg-paper h-full overflow-y-auto ${
-            activeThread ? "hidden md:block" : "block"
-          }`}
-        >
-          <div className="px-6 py-6 border-b border-line">
-            <div className="text-xs uppercase mb-1 text-slate tracking-[0.08em] font-body">
-              {currentWorkspace === "agency" ? "Agency Workspace" : "Clinic Workspace"}
-            </div>
-            <h1 className="font-display text-[26px] text-ink">Inbox</h1>
-          </div>
-          
-          {threads.length === 0 ? (
-            <div className="p-6 text-sm text-slate text-center font-body">No active conversations.</div>
-          ) : (
-            threads.map((t) => {
-              const contactName = `${t.contacts.first_name} ${t.contacts.last_name}`;
-              return (
-                <button
-                  key={t.id}
-                  onClick={() => setActiveThread(t)}
-                  className={`w-full text-left px-6 py-4 flex items-start gap-3 border-b border-line transition-colors ${
-                    activeThread?.id === t.id ? "bg-paperDim" : "hover:bg-paperDim/50"
-                  }`}
-                >
-                  <Avatar name={contactName} size={36} />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between mb-0.5">
-                      <span className={`text-sm truncate font-body ${t.is_unread ? "font-bold text-ink" : "font-medium text-ink/80"}`}>
-                        {contactName}
-                      </span>
-                      <span className="text-[10px] text-slate font-mono">
-                        {new Date(t.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      {t.channel === "email" ? <Mail size={11} className="text-slate flex-shrink-0" /> : <MessageSquare size={11} className="text-slate flex-shrink-0" />}
-                      <span className={`text-xs truncate font-body ${t.is_unread ? "text-ink font-medium" : "text-slate"}`}>
-                        {t.preview || "New conversation"}
-                      </span>
-                    </div>
-                  </div>
-                  {t.is_unread && (
-                    <span className="w-2 h-2 rounded-full mt-2 flex-shrink-0 bg-berry shadow-[0_0_0_4px_var(--berrySoft)]" />
-                  )}
-                </button>
-              );
-            })
-          )}
-        </div>
-
-        {/* Thread View Pane */}
-        {activeThread ? (
-          <InboxThread 
-            threadId={activeThread.id}
-            contactId={activeThread.contact_id}
-            contactName={`${activeThread.contacts.first_name} ${activeThread.contacts.last_name}`}
-            contactEmail={activeThread.contacts.email}
-            orgId={activeOrgId!}
-            orgSlug={orgSlug}
-            userId={userId}
-            onBack={() => setActiveThread(null)}
-          />
-        ) : (
-          <div className="hidden md:flex flex-1 flex-col items-center justify-center bg-paper/50">
-            <Mail size={48} className="text-line mb-4" />
-            <p className="text-slate font-body text-sm">Select a conversation to start reading</p>
-          </div>
-        )}
-      </div>
-    </AppLayout>
-  );
-}
-</file>
-
-<file path="src/app/layout.tsx">
-import type { Metadata } from "next";
-import { Instrument_Serif, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
-import "./globals.css";
-
-const instrumentSerif = Instrument_Serif({
-  weight: "400",
-  subsets: ["latin"],
-  variable: "--font-display",
-  adjustFontFallback: false, 
-});
-
-const ibmPlexSans = IBM_Plex_Sans({
-  weight: ["400", "500", "600", "700"],
-  subsets: ["latin"],
-  variable: "--font-body",
-});
-
-const ibmPlexMono = IBM_Plex_Mono({
-  weight: ["400", "500", "600"],
-  subsets: ["latin"],
-  variable: "--font-mono",
-});
-
-export const metadata: Metadata = {
-  title: "PyrexxAI CRM",
-  description: "Intelligent CRM and Agent Proxy for Healthcare and MedSpas",
-};
-
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
-  return (
-    <html lang="en">
-      <body
-        className={`${instrumentSerif.variable} ${ibmPlexSans.variable} ${ibmPlexMono.variable} font-body bg-paper text-ink antialiased`}
-      >
-        {children}
-      </body>
-    </html>
-  );
-}
-</file>
-
-<file path="src/app/page.tsx">
-"use client";
-import React, { useEffect, useState } from "react";
-import { AppLayout } from "@/components/layout/AppLayout";
-import { useAppStore } from "@/store/useAppStore";
-import { SectionTitle } from "@/components/ui/SectionTitle";
-import { StatCard } from "@/components/ui/StatCard";
-import { TrendingUp, Columns, CheckSquare, Phone, Calendar, TrendingDown } from "lucide-react";
-import { createClient } from "@/lib/supabase";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import { Avatar } from "@/components/ui/Avatar";
-import { PulseTrace } from "@/components/ui/PulseTrace";
-
-export default function DashboardPage() {
-  const { currentWorkspace, activeOrgId } = useAppStore();
-  const supabase = createClient();
-  const [metrics, setMetrics] = useState<any>({ openValue: 0, activeDeals: 0, chartData: [], activities: [] });
-
-  useEffect(() => {
-    if (activeOrgId && currentWorkspace === "agency") {
-      fetchAgencyData();
-    }
-    // In production, add fetchClinicData() branch here for the fallback metrics
-  }, [activeOrgId, currentWorkspace]);
-
-  const fetchAgencyData = async () => {
-    // 1. Fetch Deals
-    const { data: deals } = await supabase.from("deals").select("*").eq("org_id", activeOrgId);
-    
-    // 2. Fetch Recent Activities (Audit Log)
-    const { data: activities } = await supabase
-      .from("activities")
-      .select("*, users(full_name)")
-      .eq("org_id", activeOrgId)
-      .order("created_at", { ascending: false })
-      .limit(5);
-
-    if (deals) {
-      const activeDeals = deals.filter(d => d.stage !== "Active Client");
-      const openValue = activeDeals.reduce((sum, d) => sum + Number(d.value), 0);
-      
-      const STAGES = ["New Lead", "Demo Scheduled", "Proposal Sent", "Contract Sent", "Onboarding"];
-      const chartData = STAGES.map(stage => ({
-        stage: stage.replace(" ", "\n"),
-        count: deals.filter(d => d.stage === stage).length
-      }));
-
-      setMetrics({ openValue, activeDeals: activeDeals.length, chartData, activities: activities || [] });
-    }
-  };
-
-  return (
-    <AppLayout>
-      <div className="p-4 md:p-8 max-w-6xl mx-auto">
-        <SectionTitle 
-          eyebrow={currentWorkspace === "agency" ? "Agency Workspace" : "Bloom MedSpa"} 
-          title={currentWorkspace === "agency" ? "Pipeline Overview" : "Front Desk Overview"} 
-        />
-
-        {currentWorkspace === "agency" ? (
-          <>
-            {/* Agency Metrics */}
-            <div className="flex gap-3 md:gap-4 mb-8 flex-wrap">
-              <StatCard label="Open pipeline value" value={`$${metrics.openValue.toLocaleString()}`} delta="+12% vs last month" deltaUp icon={TrendingUp} />
-              <StatCard label="Active deals" value={metrics.activeDeals} delta="Tracking well" deltaUp icon={Columns} />
-              <StatCard label="Recent Activities" value={metrics.activities.length} deltaUp={false} icon={CheckSquare} />
-              <StatCard label="Win Rate" value="34%" delta="+4pts" deltaUp icon={TrendingUp} />
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
-              {/* Funnel Chart */}
-              <div className="md:col-span-3 rounded-xl p-6 bg-white border border-line shadow-card">
-                <div className="text-sm font-medium mb-6 text-ink font-body">Pipeline by stage</div>
-                <div className="h-[240px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={metrics.chartData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#E3E1DA" vertical={false} />
-                      <XAxis dataKey="stage" tick={{ fontSize: 11, fontFamily: "var(--font-body)", fill: "#6B6E77" }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fontSize: 11, fontFamily: "var(--font-mono)", fill: "#6B6E77" }} axisLine={false} tickLine={false} allowDecimals={false} />
-                      <Tooltip cursor={{ fill: "#F5F5F2" }} contentStyle={{ fontFamily: "var(--font-body)", fontSize: 12, borderRadius: 8, border: "1px solid #E3E1DA", boxShadow: "0px 2px 4px rgba(19, 20, 27, 0.04)" }} />
-                      <Bar dataKey="count" fill="#AF3358" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              {/* Activity Feed (Audit Trail rendering) */}
-              <div className="md:col-span-2 rounded-xl p-6 bg-white border border-line shadow-card overflow-hidden flex flex-col">
-                <div className="text-sm font-medium mb-4 text-ink font-body">Recent Activity Log</div>
-                <div className="space-y-4 flex-1 overflow-y-auto pr-2">
-                  {metrics.activities.length === 0 ? (
-                    <div className="text-xs text-slate font-body text-center mt-4">No recent activity</div>
-                  ) : (
-                    metrics.activities.map((act: any) => (
-                      <div key={act.id} className="flex items-start gap-3">
-                        <Avatar name={act.users?.full_name || "System"} size={28} />
-                        <div>
-                          <div className="text-sm text-ink font-body leading-tight">
-                            <span className="font-medium">{act.users?.full_name || "System"}</span> {act.content.toLowerCase()}
-                          </div>
-                          <div className="text-[10px] text-slate font-mono mt-1">
-                            {new Date(act.created_at).toLocaleString()}
-                          </div>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
-          </>
-        ) : (
-          <>
-            {/* Clinic Fallback Metrics (To be fully wired to the proxy DB later) */}
-            <div className="flex gap-3 md:gap-4 mb-8 flex-wrap">
-              <StatCard label="Calls today" value="17" delta="+5 vs yesterday" deltaUp icon={Phone} />
-              <StatCard label="Booked appointments" value="11" delta="65% conversion" deltaUp icon={Calendar} />
-              <StatCard label="No-show rate" value="4.2%" delta="-1.1pts" deltaUp icon={TrendingDown} />
-              <StatCard label="Revenue this month" value="$28,400" delta="+9% MoM" deltaUp icon={TrendingUp} />
-            </div>
-
-            <div className="rounded-xl p-6 bg-white border border-line shadow-card">
-              <div className="text-sm font-medium mb-4 text-ink font-body">Live Call Intelligence Feed</div>
-              <div className="text-xs text-slate font-body p-4 bg-paperDim rounded border border-line text-center">
-                Retell AI Voice proxy routing will populate this feed. (Data layer pending Retell integration)
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-    </AppLayout>
-  );
-}
-</file>
-
 <file path="src/app/pipeline/page.tsx">
 "use client";
 import React from "react";
@@ -1028,72 +1096,6 @@ export default function ReportsPage() {
             </ResponsiveContainer>
           </div>
         </div>
-      </div>
-    </AppLayout>
-  );
-}
-</file>
-
-<file path="src/app/tasks/page.tsx">
-"use client";
-import React, { useState } from "react";
-import { AppLayout } from "@/components/layout/AppLayout";
-import { SectionTitle } from "@/components/ui/SectionTitle";
-import { Button } from "@/components/ui/Button";
-import { Plus, CheckCircle2, Circle } from "lucide-react";
-import { useAppStore } from "@/store/useAppStore";
-
-const MOCK_TASKS = [
-  { id: 1, title: "Send Bloom Aesthetics pricing sheet", contact: "Sarah Okafor", due: "Overdue", done: false },
-  { id: 2, title: "Call Linda Osei back re: dropped call", contact: "Linda Osei", due: "Overdue", done: false },
-  { id: 3, title: "Prep demo script for Torres Orthodontics", contact: "Michael Torres", due: "Today", done: false },
-  { id: 4, title: "Chase signature — Calm Mind Therapy contract", contact: "Priya Patel", due: "This week", done: false },
-];
-
-export default function TasksPage() {
-  const { currentWorkspace } = useAppStore();
-  const [tasks, setTasks] = useState(MOCK_TASKS);
-  const groups = ["Overdue", "Today", "This week"];
-
-  const toggle = (id: number) => {
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, done: !t.done } : t));
-  };
-
-  return (
-    <AppLayout>
-      <div className="p-4 md:p-8 max-w-3xl mx-auto">
-        <SectionTitle 
-          eyebrow={currentWorkspace === "agency" ? "Agency Workspace" : "Clinic Workspace"}
-          title="Tasks" 
-          action={<Button icon={Plus}>New Task</Button>} 
-        />
-        
-        {groups.map((g) => {
-          const items = tasks.filter((t) => t.due === g);
-          if (items.length === 0) return null;
-          return (
-            <div key={g} className="mb-6">
-              <div className={`text-xs uppercase mb-2 tracking-[0.06em] font-body ${g === "Overdue" ? "text-berry" : "text-slate"}`}>
-                {g}
-              </div>
-              <div className="rounded-xl overflow-hidden border border-line bg-white shadow-card">
-                {items.map((t) => (
-                  <div key={t.id} className="flex items-center gap-3 px-4 py-3 border-b border-line last:border-0">
-                    <button onClick={() => toggle(t.id)}>
-                      {t.done ? <CheckCircle2 size={17} className="text-sage" /> : <Circle size={17} className="text-slate" />}
-                    </button>
-                    <div className="flex-1">
-                      <div className={`text-sm font-body ${t.done ? "text-slate line-through" : "text-ink"}`}>
-                        {t.title}
-                      </div>
-                      <div className="text-xs text-slate font-body">{t.contact}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
       </div>
     </AppLayout>
   );
@@ -1442,89 +1444,6 @@ export function ContactsTable({ data, searchQuery, setSearchQuery }: ContactsTab
 }
 </file>
 
-<file path="src/components/features/contacts/CsvImportModal.tsx">
-"use client";
-import React, { useState } from "react";
-import Papa from "papaparse";
-import { Modal } from "@/components/ui/Modal";
-import { Button } from "@/components/ui/Button";
-import { Upload, AlertCircle } from "lucide-react";
-import { createClient } from "@/lib/supabase";
-import { useAppStore } from "@/store/useAppStore";
-import { toast } from "sonner";
-
-export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean, onClose: () => void, onSuccess: () => void }) {
-  const supabase = createClient();
-  const { activeOrgId } = useAppStore();
-  const [file, setFile] = useState<File | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
-
-  const handleUpload = () => {
-    if (!file || !activeOrgId) return;
-    setIsUploading(true);
-
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: async (results) => {
-        const rows = results.data as any[];
-        const payload = rows.map(row => ({
-          org_id: activeOrgId,
-          first_name: row.first_name || row.firstName || "Unknown",
-          last_name: row.last_name || row.lastName || "Contact",
-          email: row.email || null,
-          phone: row.phone || null,
-          type: "lead",
-          stage: "New Lead"
-        }));
-
-        const { error } = await supabase.from("contacts").insert(payload);
-        setIsUploading(false);
-
-        if (error) {
-          toast.error("Import failed", { description: error.message });
-        } else {
-          toast.success(`Successfully imported ${payload.length} contacts.`);
-          setFile(null);
-          onSuccess();
-          onClose();
-        }
-      }
-    });
-  };
-
-  return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Import Contacts">
-      <div className="flex flex-col items-center justify-center border-2 border-dashed border-line rounded-xl p-8 mb-4 bg-paperDim text-center">
-        <Upload size={32} className="text-slate mb-3" />
-        <p className="text-sm text-ink font-medium mb-1">Upload a CSV file</p>
-        <p className="text-xs text-slate mb-4">Must include headers: first_name, last_name, email, phone</p>
-        <input 
-          type="file" 
-          accept=".csv"
-          onChange={(e) => setFile(e.target.files?.[0] || null)}
-          className="block w-full text-xs text-slate file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-ink file:text-paper hover:file:bg-inkSoft"
-        />
-      </div>
-
-      {file && (
-        <div className="flex items-center gap-2 p-3 rounded-lg bg-sageSoft text-sage text-sm font-medium mb-4">
-          <AlertCircle size={16} />
-          Ready to import: {file.name}
-        </div>
-      )}
-
-      <div className="flex justify-end gap-3 pt-4 border-t border-line">
-        <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-        <Button onClick={handleUpload} disabled={!file || isUploading}>
-          {isUploading ? "Importing..." : "Start Import"}
-        </Button>
-      </div>
-    </Modal>
-  );
-}
-</file>
-
 <file path="src/components/features/inbox/InboxThread.tsx">
 "use client";
 import React, { useState, useEffect } from "react";
@@ -1754,116 +1673,118 @@ export function DealFormModal({ isOpen, onClose, onSuccess }: { isOpen: boolean;
 }
 </file>
 
-<file path="src/components/features/pipeline/PipelineBoard.tsx">
+<file path="src/components/features/pipeline/NextActionModal.tsx">
 "use client";
-import React, { useState, useEffect } from "react";
-import { DndContext, DragEndEvent, closestCorners } from "@dnd-kit/core";
-import { PipelineColumn } from "./PipelineColumn";
+import React, { useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
+import { Modal } from "@/components/ui/Modal";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
 import { createClient } from "@/lib/supabase";
 import { useAppStore } from "@/store/useAppStore";
 import { toast } from "sonner";
-import { SectionTitle } from "@/components/ui/SectionTitle";
-import { Button } from "@/components/ui/Button";
-import { Plus } from "lucide-react";
-import { DealFormModal } from "./DealFormModal";
 
-const STAGES = ["New Lead", "Demo Scheduled", "Proposal Sent", "Contract Sent", "Onboarding", "Active Client"];
+const nextActionSchema = z.object({
+  title: z.string().min(1, "You must specify the next action to take"),
+  due_date: z.string().min(1, "You must set a due date"),
+});
 
-export function PipelineBoard() {
+type NextActionValues = z.infer<typeof nextActionSchema>;
+
+interface NextActionModalProps {
+  isOpen: boolean;
+  dealId: string;
+  contactId: string;
+  newStage: string;
+  onCancel: () => void;
+  onSuccess: () => void;
+}
+
+export function NextActionModal({ isOpen, dealId, contactId, newStage, onCancel, onSuccess }: NextActionModalProps) {
   const supabase = createClient();
-  const { activeOrgId, currentWorkspace } = useAppStore();
-  const [deals, setDeals] = useState<any[]>([]);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const { activeOrgId, userId } = useAppStore();
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const fetchDeals = async () => {
-    if (!activeOrgId) return;
-    const { data, error } = await supabase
+  const { register, handleSubmit, formState: { errors }, reset } = useForm<NextActionValues>({
+    resolver: zodResolver(nextActionSchema),
+  });
+
+  const onSubmit = async (data: NextActionValues) => {
+    if (!activeOrgId || !userId) return;
+    setIsSubmitting(true);
+
+    // 1. Update the Deal Stage and Next Action text
+    const { error: dealError } = await supabase
       .from("deals")
-      .select(`*, contacts (first_name, last_name)`)
-      .eq("org_id", activeOrgId);
-      
-    if (!error && data) setDeals(data);
-  };
-
-  useEffect(() => {
-    fetchDeals();
-  }, [activeOrgId]);
-
-  const handleDragEnd = async (event: DragEndEvent) => {
-    const { active, over } = event;
-    if (!over) return; // Dropped outside a valid column
-
-    const dealId = active.id as string;
-    const currentStage = active.data.current?.stage;
-    const newStage = over.id as string;
-
-    if (currentStage === newStage) return; // Dropped in the same column
-
-    // 1. Optimistic UI Update
-    setDeals(prevDeals => 
-      prevDeals.map(d => d.id === dealId ? { ...d, stage: newStage } : d)
-    );
-
-    // 2. Persist to Supabase
-    const { error } = await supabase
-      .from("deals")
-      .update({ stage: newStage, updated_at: new Date().toISOString() })
+      .update({ 
+        stage: newStage, 
+        next_action: data.title,
+        updated_at: new Date().toISOString()
+      })
       .eq("id", dealId);
 
-    if (error) {
-      toast.error("Failed to update deal stage");
-      fetchDeals(); // Revert to source of truth on failure
-    } else {
-      // If deal hits Active Client, trigger Sub-Account provision logic (Stubbed here for Phase 4)
-      if (newStage === "Active Client") {
-        toast.success("Deal Won! Sub-account provisioning triggered.");
-        // We will wire the org creation trigger here in the next phase
-      }
+    if (dealError) {
+      toast.error("Failed to move deal", { description: dealError.message });
+      setIsSubmitting(false);
+      return;
     }
+
+    // 2. Create a persistent Task assigned to the Rep
+    const { error: taskError } = await supabase
+      .from("tasks")
+      .insert({
+        org_id: activeOrgId,
+        contact_id: contactId,
+        assignee_id: userId,
+        title: data.title,
+        due_date: data.due_date,
+        is_completed: false
+      });
+
+    setIsSubmitting(false);
+
+    if (taskError) {
+      toast.error("Deal moved, but failed to create task");
+    } else {
+      toast.success("Deal advanced and task created!");
+    }
+
+    reset();
+    onSuccess();
   };
 
-  const openValue = deals
-    .filter(d => d.stage !== "Active Client")
-    .reduce((sum, d) => sum + Number(d.value), 0);
-
   return (
-    <div className="flex flex-col h-full w-full">
-      <div className="flex-shrink-0 px-4 md:px-8 pt-4 md:pt-8">
-        <SectionTitle 
-          eyebrow={currentWorkspace === "agency" ? "Agency Workspace" : "Clinic Workspace"}
-          title="Pipeline" 
-          action={
-            <div className="flex items-center gap-4">
-              <span className="hidden sm:inline-block text-sm text-slate font-mono font-medium bg-paperDim px-3 py-1.5 rounded-lg border border-line">
-                Pipeline Value: <span className="text-ink">${openValue.toLocaleString()}</span>
-              </span>
-              <Button icon={Plus} onClick={() => setIsModalOpen(true)}>New Deal</Button>
-            </div>
-          } 
+    <Modal isOpen={isOpen} onClose={onCancel} title="Enforce Next Action">
+      <div className="mb-4 p-3 rounded-lg bg-paperDim border border-line text-sm text-ink font-body">
+        You are moving this deal to <span className="font-semibold text-berry">{newStage}</span>. 
+        To prevent deals from going stale, you must set a follow-up action.
+      </div>
+
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <Input 
+          label="What is the next action?" 
+          placeholder="e.g. Call to confirm pricing details" 
+          {...register("title")} 
+          error={errors.title?.message} 
+          autoFocus 
         />
-      </div>
-
-      {/* The Kanban Board Scroll Area */}
-      <div className="flex-1 overflow-x-auto overflow-y-hidden px-4 md:px-8 pb-4">
-        <div className="flex gap-4 md:gap-6 h-full snap-x snap-mandatory md:snap-none w-max">
-          <DndContext collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
-            {STAGES.map((stage) => (
-              <PipelineColumn 
-                key={stage} 
-                stage={stage} 
-                deals={deals.filter(d => d.stage === stage)} 
-              />
-            ))}
-          </DndContext>
+        <Input 
+          label="Due Date" 
+          type="date" 
+          {...register("due_date")} 
+          error={errors.due_date?.message} 
+        />
+        
+        <div className="flex justify-end gap-3 pt-4 border-t border-line">
+          <Button type="button" variant="ghost" onClick={onCancel}>Cancel Move</Button>
+          <Button type="submit" disabled={isSubmitting}>
+            {isSubmitting ? "Saving..." : "Confirm & Move Deal"}
+          </Button>
         </div>
-      </div>
-
-      <DealFormModal 
-        isOpen={isModalOpen} 
-        onClose={() => setIsModalOpen(false)} 
-        onSuccess={fetchDeals} 
-      />
-    </div>
+      </form>
+    </Modal>
   );
 }
 </file>
@@ -1982,6 +1903,99 @@ export function PipelineColumn({ stage, deals }: PipelineColumnProps) {
         ))}
       </div>
     </div>
+  );
+}
+</file>
+
+<file path="src/components/features/tasks/TaskFormModal.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
+import { Modal } from "@/components/ui/Modal";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { createClient } from "@/lib/supabase";
+import { useAppStore } from "@/store/useAppStore";
+import { toast } from "sonner";
+
+const taskSchema = z.object({
+  title: z.string().min(1, "Task description is required"),
+  due_date: z.string().min(1, "Due date is required"),
+  contact_id: z.string().min(1, "Please select a contact"),
+});
+
+type TaskFormValues = z.infer<typeof taskSchema>;
+
+export function TaskFormModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; onClose: () => void, onSuccess: () => void }) {
+  const supabase = createClient();
+  const { activeOrgId, userId } = useAppStore();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [contacts, setContacts] = useState<{ id: string, first_name: string, last_name: string }[]>([]);
+
+  const { register, handleSubmit, formState: { errors }, reset } = useForm<TaskFormValues>({
+    resolver: zodResolver(taskSchema),
+  });
+
+  useEffect(() => {
+    if (isOpen && activeOrgId) {
+      supabase.from("contacts").select("id, first_name, last_name").eq("org_id", activeOrgId)
+        .then(({ data }) => setContacts(data || []));
+    }
+  }, [isOpen, activeOrgId, supabase]);
+
+  const onSubmit = async (data: TaskFormValues) => {
+    if (!activeOrgId || !userId) return;
+    setIsSubmitting(true);
+    
+    const { error } = await supabase.from("tasks").insert({
+      org_id: activeOrgId,
+      assignee_id: userId,
+      ...data
+    });
+
+    setIsSubmitting(false);
+
+    if (error) {
+      toast.error("Failed to create task", { description: error.message });
+    } else {
+      toast.success("Task created successfully!");
+      reset();
+      onSuccess();
+      onClose();
+    }
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="New Task">
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <Input label="Task Description" placeholder="e.g. Follow up on proposal" {...register("title")} error={errors.title?.message} autoFocus />
+        
+        <div className="w-full flex flex-col gap-1.5 mb-3">
+          <label className="text-xs text-slate font-body font-medium">Associated Contact</label>
+          <select 
+            {...register("contact_id")} 
+            className="w-full px-3 py-2 rounded-lg text-sm outline-none bg-paperDim font-body text-ink border border-transparent focus:border-berry focus:bg-white transition-all"
+          >
+            <option value="">Select a contact...</option>
+            {contacts.map(c => (
+              <option key={c.id} value={c.id}>{c.first_name} {c.last_name}</option>
+            ))}
+          </select>
+          {errors.contact_id && <span className="text-[10px] text-berry font-body">{errors.contact_id.message}</span>}
+        </div>
+
+        <Input label="Due Date" type="date" {...register("due_date")} error={errors.due_date?.message} />
+        
+        <div className="flex justify-end gap-3 pt-4 border-t border-line">
+          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button type="submit" disabled={isSubmitting}>
+            {isSubmitting ? "Saving..." : "Create Task"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 </file>
@@ -2310,6 +2324,86 @@ export function Topbar() {
 }
 </file>
 
+<file path="src/components/providers/AuthProvider.tsx">
+"use client";
+import React, { useEffect, useState } from 'react';
+import { createClient } from '@/lib/supabase';
+import { useAppStore } from '@/store/useAppStore';
+import { useRouter } from 'next/navigation';
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const supabase = createClient();
+  const router = useRouter();
+  const { activeOrgId, setActiveOrgId, setUser, setWorkspace } = useAppStore();
+  const [isBootstrapping, setIsBootstrapping] = useState(true);
+
+  useEffect(() => {
+    const bootstrap = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) {
+        setIsBootstrapping(false);
+        return;
+      }
+
+      // Fetch the user's memberships alongside the parent organization data
+      const { data: memberships } = await supabase
+        .from('memberships')
+        .select('role, org_id, organizations(type)')
+        .eq('user_id', user.id);
+
+      if (memberships && memberships.length > 0) {
+        // Fix: Safely handle Supabase's type inference for foreign key joins
+        // It can infer it as an array or an object depending on schema strictness.
+        const agencyMembership = memberships.find((m: any) => {
+          const org = Array.isArray(m.organizations) ? m.organizations[0] : m.organizations;
+          return org?.type === 'agency';
+        });
+        
+        setUser(user.id, agencyMembership?.role || 'rep');
+
+        // If no active org is persisted, or the persisted org is no longer valid, set a default
+        const validOrgIds = memberships.map(m => m.org_id);
+        if (!activeOrgId || !validOrgIds.includes(activeOrgId)) {
+          if (agencyMembership) {
+            setActiveOrgId(agencyMembership.org_id);
+            setWorkspace('agency');
+          } else {
+            setActiveOrgId(memberships[0].org_id);
+            setWorkspace('clinic');
+          }
+        }
+      }
+
+      setIsBootstrapping(false);
+    };
+
+    bootstrap();
+
+    // Listen for sign outs
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        setActiveOrgId(null);
+        setUser(null, null);
+        router.push('/auth/login');
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [supabase, activeOrgId, setActiveOrgId, setUser, setWorkspace, router]);
+
+  if (isBootstrapping) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-paper">
+        <div className="w-6 h-6 border-2 border-berry border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
+</file>
+
 <file path="src/components/ui/Avatar.tsx">
 import React from "react";
 import { cn } from "@/lib/utils";
@@ -2418,6 +2512,182 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 );
 
 Button.displayName = "Button";
+</file>
+
+<file path="src/components/ui/CommandPalette.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { Search, User, Building2, Columns, X } from "lucide-react";
+import { createClient } from "@/lib/supabase";
+import { useAppStore } from "@/store/useAppStore";
+import { Badge } from "@/components/ui/Badge";
+
+export function CommandPalette() {
+  const [isOpen, setIsOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<{ type: string; id: string; title: string; subtitle: string }[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  
+  const router = useRouter();
+  const supabase = createClient();
+  const { activeOrgId, currentWorkspace } = useAppStore();
+
+  // 1. Listen for Cmd+K or Ctrl+K
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setIsOpen((prev) => !prev);
+      }
+      if (e.key === "Escape") setIsOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // 2. Perform Global Search
+  useEffect(() => {
+    if (!query.trim() || !activeOrgId) {
+      setResults([]);
+      return;
+    }
+
+    const searchDb = async () => {
+      setIsLoading(true);
+      const searchQ = query.trim();
+      let combinedResults: any[] = [];
+
+      // A. Search Contacts (using the tsvector built in Phase 1)
+      const { data: contacts } = await supabase
+        .from("contacts")
+        .select("id, first_name, last_name, email")
+        .eq("org_id", activeOrgId)
+        .textSearch("search_vector", searchQ, { type: 'websearch', config: 'english' })
+        .limit(5);
+
+      if (contacts) {
+        combinedResults.push(...contacts.map(c => ({
+          type: "Contact",
+          id: c.id,
+          title: `${c.first_name} ${c.last_name}`,
+          subtitle: c.email || "No email"
+        })));
+      }
+
+      // B. Search Deals (ilike match on name)
+      const { data: deals } = await supabase
+        .from("deals")
+        .select("id, name, stage")
+        .eq("org_id", activeOrgId)
+        .ilike("name", `%${searchQ}%`)
+        .limit(3);
+
+      if (deals) {
+        combinedResults.push(...deals.map(d => ({
+          type: "Deal",
+          id: "pipeline", // Routes to pipeline board for now
+          title: d.name,
+          subtitle: `Stage: ${d.stage}`
+        })));
+      }
+
+      // C. Search Sub-Accounts (Only if Agency Workspace)
+      if (currentWorkspace === "agency") {
+        const { data: orgs } = await supabase
+          .from("organizations")
+          .select("id, name, slug")
+          .eq("type", "clinic")
+          .ilike("name", `%${searchQ}%`)
+          .limit(3);
+
+        if (orgs) {
+          combinedResults.push(...orgs.map(o => ({
+            type: "Account",
+            id: o.id,
+            title: o.name,
+            subtitle: `${o.slug}@app.pyrexxai.com`
+          })));
+        }
+      }
+
+      setResults(combinedResults);
+      setIsLoading(false);
+    };
+
+    const debounceId = setTimeout(searchDb, 300);
+    return () => clearTimeout(debounceId);
+  }, [query, activeOrgId, currentWorkspace, supabase]);
+
+  const handleSelect = (result: any) => {
+    setIsOpen(false);
+    setQuery("");
+    
+    if (result.type === "Contact") router.push(`/contacts/${result.id}`);
+    if (result.type === "Deal") router.push(`/pipeline`);
+    if (result.type === "Account") router.push(`/accounts`);
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-start justify-center pt-24 pb-4 px-4 bg-ink/60 backdrop-blur-sm" onClick={() => setIsOpen(false)}>
+      <div className="w-full max-w-2xl bg-white rounded-xl shadow-2xl overflow-hidden border border-line flex flex-col" onClick={e => e.stopPropagation()}>
+        
+        {/* Search Input */}
+        <div className="flex items-center px-4 border-b border-line bg-paperDim/30">
+          <Search size={18} className="text-slate flex-shrink-0" />
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search contacts, deals, or accounts..."
+            className="w-full bg-transparent border-none outline-none px-4 py-4 text-ink font-body placeholder:text-slate"
+          />
+          <button onClick={() => setIsOpen(false)} className="p-1 text-slate hover:text-ink transition-colors rounded">
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Results */}
+        <div className="max-h-[60vh] overflow-y-auto p-2">
+          {query.trim() === "" ? (
+            <div className="p-8 text-center text-sm text-slate font-body">
+              Start typing to search globally...
+            </div>
+          ) : results.length > 0 ? (
+            <div className="space-y-1">
+              {results.map((r, i) => (
+                <button
+                  key={`${r.type}-${r.id}-${i}`}
+                  onClick={() => handleSelect(r)}
+                  className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-paperDim transition-colors text-left group"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-white border border-line flex items-center justify-center text-slate group-hover:text-berry group-hover:border-berrySoft transition-colors">
+                      {r.type === "Contact" && <User size={14} />}
+                      {r.type === "Deal" && <Columns size={14} />}
+                      {r.type === "Account" && <Building2 size={14} />}
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium text-ink font-body">{r.title}</div>
+                      <div className="text-xs text-slate font-body">{r.subtitle}</div>
+                    </div>
+                  </div>
+                  <Badge variant="slate" className="opacity-60 group-hover:opacity-100">{r.type}</Badge>
+                </button>
+              ))}
+            </div>
+          ) : isLoading ? (
+             <div className="p-8 text-center text-sm text-slate font-body">Searching...</div>
+          ) : (
+             <div className="p-8 text-center text-sm text-slate font-body">No results found for "{query}"</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 </file>
 
 <file path="src/components/ui/Input.tsx">
@@ -2654,6 +2924,33 @@ export function createClient() {
 }
 </file>
 
+<file path="src/lib/supabase/server.ts">
+import { createServerClient, type CookieOptions } from '@supabase/ssr'
+import { cookies } from 'next/headers'
+
+export function createServerSupabaseClient() {
+  const cookieStore = cookies()
+
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value
+        },
+        set(name: string, value: string, options: CookieOptions) {
+          try { cookieStore.set({ name, value, ...options }) } catch (error) {}
+        },
+        remove(name: string, options: CookieOptions) {
+          try { cookieStore.set({ name, value: '', ...options }) } catch (error) {}
+        },
+      },
+    }
+  )
+}
+</file>
+
 <file path="src/lib/utils.ts">
 import { type ClassValue, clsx } from "clsx"
 import { twMerge } from "tailwind-merge"
@@ -2663,69 +2960,53 @@ export function cn(...inputs: ClassValue[]) {
 }
 </file>
 
-<file path="src/store/useAppStore.ts">
-import { create } from 'zustand';
+<file path="src/middleware.ts">
+import { createServerClient, type CookieOptions } from '@supabase/ssr'
+import { NextResponse, type NextRequest } from 'next/server'
 
-type WorkspaceType = 'agency' | 'clinic';
+export async function middleware(request: NextRequest) {
+  let response = NextResponse.next({ request: { headers: request.headers } })
 
-interface AppState {
-  currentWorkspace: WorkspaceType;
-  activeOrgId: string | null;
-  mobileMenuOpen: boolean;
-  setWorkspace: (ws: WorkspaceType) => void;
-  setActiveOrgId: (id: string | null) => void;
-  setMobileMenuOpen: (open: boolean) => void;
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) { return request.cookies.get(name)?.value },
+        set(name: string, value: string, options: CookieOptions) {
+          request.cookies.set({ name, value, ...options })
+          response = NextResponse.next({ request: { headers: request.headers } })
+          response.cookies.set({ name, value, ...options })
+        },
+        remove(name: string, options: CookieOptions) {
+          request.cookies.set({ name, value: '', ...options })
+          response = NextResponse.next({ request: { headers: request.headers } })
+          response.cookies.set({ name, value: '', ...options })
+        },
+      },
+    }
+  )
+
+  const { data: { user } } = await supabase.auth.getUser()
+
+  // Protect all routes except auth routes and API webhooks
+  const isAuthRoute = request.nextUrl.pathname.startsWith('/auth')
+  const isApiRoute = request.nextUrl.pathname.startsWith('/api')
+
+  if (!user && !isAuthRoute && !isApiRoute) {
+    return NextResponse.redirect(new URL('/auth/login', request.url))
+  }
+
+  if (user && isAuthRoute) {
+    return NextResponse.redirect(new URL('/', request.url))
+  }
+
+  return response
 }
 
-export const useAppStore = create<AppState>((set) => ({
-  currentWorkspace: 'agency',
-  activeOrgId: null,
-  mobileMenuOpen: false,
-  setWorkspace: (ws) => set({ currentWorkspace: ws }),
-  setActiveOrgId: (id) => set({ activeOrgId: id }),
-  setMobileMenuOpen: (open) => set({ mobileMenuOpen: open }),
-}));
-</file>
-
-<file path="tailwind.config.ts">
-import type { Config } from "tailwindcss";
-
-const config: Config = {
-  content: [
-    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
-  ],
-  theme: {
-    extend: {
-      colors: {
-        ink: "#13141B",
-        inkSoft: "#1B1D27",
-        ink600: "#3A3D49",
-        paper: "#F5F5F2",
-        paperDim: "#EDECE7",
-        line: "#E3E1DA",
-        berry: "#AF3358",
-        berrySoft: "#F3DEE5",
-        amber: "#D69A32",
-        amberSoft: "#F7ECD6",
-        sage: "#4C8A67",
-        sageSoft: "#DDEBE1",
-        slate: "#6B6E77",
-      },
-      fontFamily: {
-        display: ["'Instrument Serif'", "serif"],
-        body: ["'IBM Plex Sans'", "sans-serif"],
-        mono: ["'IBM Plex Mono'", "monospace"],
-      },
-      boxShadow: {
-        card: "0px 2px 4px rgba(19, 20, 27, 0.04)",
-      }
-    },
-  },
-  plugins: [],
-};
-export default config;
+export const config = {
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
+}
 </file>
 
 <file path="tsconfig.json">
@@ -2758,6 +3039,974 @@ export default config;
 }
 </file>
 
+<file path="src/app/calls/page.tsx">
+"use client";
+import React, { useState } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { SectionTitle } from "@/components/ui/SectionTitle";
+import { Avatar } from "@/components/ui/Avatar";
+import { Badge } from "@/components/ui/Badge";
+import { PulseTrace } from "@/components/ui/PulseTrace";
+import { ChevronDown, PlayCircle, Sparkles } from "lucide-react";
+
+// Keeping the mock calls just for visual schema presentation until Retell is wired
+const CALLS = [
+  { id: 1, contact: "Sarah Okafor", phone: "(415) 555-0132", duration: "4:12", time: "Today, 2:04 PM", sentiment: "positive", outcome: "Booked consult", summary: "Caller asked about Botox pricing for repeat clients. AI receptionist quoted the loyalty tier and booked a Thursday 2pm consult.", transcript: [["Caller", "Hi, do you still have that returning-client discount on Botox?"], ["Agent", "Yes — returning clients get 15% off through the end of the month. Would you like me to check Thursday availability?"]] },
+  { id: 2, contact: "Linda Osei", phone: "(707) 555-0119", duration: "0:38", time: "Today, 1:10 PM", sentiment: "negative", outcome: "No action taken", summary: "Call dropped after 38 seconds; caller sounded frustrated about hold time before connecting.", transcript: [["Caller", "I've been trying to reach someone all morning..."], ["Agent", "I'm sorry about that — I can help right now. What can I book for you?"]] }
+];
+
+export default function CallsPage() {
+  const [expanded, setExpanded] = useState<number | null>(CALLS[0].id);
+
+  return (
+    <AppLayout>
+      <div className="p-4 md:p-8 max-w-5xl mx-auto">
+        <SectionTitle eyebrow="Bloom Aesthetics MedSpa" title="Call intelligence" />
+        
+        {/* The Disclaimer Banner */}
+        <div className="rounded-xl p-4 mb-6 flex items-start gap-2 bg-amberSoft border border-amber">
+          <Sparkles size={15} className="text-amber flex-shrink-0 mt-0.5" />
+          <span className="text-xs text-ink600 font-body">
+            Inbound Call Intelligence activates once the Retell AI Voice integration is live. This page demonstrates the layout and AI transcript summarization schema. Data shown is a placeholder.
+          </span>
+        </div>
+
+        <div className="space-y-3 opacity-80 pointer-events-none">
+          {CALLS.map((call) => {
+            const open = expanded === call.id;
+            return (
+              <div key={call.id} className="rounded-xl overflow-hidden bg-white border border-line shadow-card transition-all">
+                <button 
+                  onClick={() => setExpanded(open ? null : call.id)} 
+                  className="w-full flex items-center gap-3 md:gap-4 px-4 md:px-5 py-4 text-left flex-wrap"
+                >
+                  <Avatar name={call.contact} size={32} />
+                  <div className="flex-1 min-w-[100px]">
+                    <div className="text-sm font-medium text-ink font-body">{call.contact}</div>
+                    <div className="text-xs text-slate font-body">{call.phone} · {call.time}</div>
+                  </div>
+                  <Badge variant="slate">{call.outcome}</Badge>
+                  <PulseTrace sentiment={call.sentiment as any} size="lg" />
+                  <span className="text-sm w-12 text-right text-slate font-mono">{call.duration}</span>
+                  <ChevronDown size={16} className={`text-slate transition-transform ${open ? "rotate-180" : ""}`} />
+                </button>
+                
+                {open && (
+                  <div className="px-4 md:px-5 pb-5 border-t border-line">
+                    <div className="flex items-center gap-2 mt-4 mb-3">
+                      <PlayCircle size={18} className="text-ink" />
+                      <div className="flex-1 flex items-end gap-0.5 h-6">
+                        {Array.from({ length: 40 }).map((_, i) => (
+                          <div key={i} style={{ height: 4 + Math.abs(Math.sin(i * 0.7)) * 18, width: 2, backgroundColor: "#EDECE7", borderRadius: 1 }} />
+                        ))}
+                      </div>
+                    </div>
+                    <div className="rounded-lg p-3 mb-3 bg-amberSoft">
+                      <div className="text-xs uppercase mb-1 text-amber tracking-[0.05em] font-body">AI summary</div>
+                      <div className="text-sm text-ink600 font-body">{call.summary}</div>
+                    </div>
+                    <div className="text-xs uppercase mb-2 text-slate tracking-[0.05em] font-body">Transcript</div>
+                    <div className="space-y-2">
+                      {call.transcript.map((line, i) => (
+                        <div key={i} className="text-sm font-mono text-ink">
+                          <span className={`font-semibold ${line[0] === "Agent" ? "text-berry" : "text-slate"}`}>
+                            {line[0]}: 
+                          </span> {line[1]}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </AppLayout>
+  );
+}
+</file>
+
+<file path="src/app/inbox/page.tsx">
+"use client";
+import React, { useState, useEffect, Suspense } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { Avatar } from "@/components/ui/Avatar";
+import { Mail, MessageSquare } from "lucide-react";
+import { createClient } from "@/lib/supabase";
+import { useAppStore } from "@/store/useAppStore";
+import { InboxThread } from "@/components/features/inbox/InboxThread";
+import { useSearchParams } from "next/navigation";
+
+function InboxContent() {
+  const supabase = createClient();
+  const searchParams = useSearchParams();
+  const queryThreadId = searchParams.get("threadId");
+  
+  const { activeOrgId, currentWorkspace } = useAppStore();
+  const [threads, setThreads] = useState<any[]>([]);
+  const [activeThread, setActiveThread] = useState<any | null>(null);
+  const [orgSlug, setOrgSlug] = useState("");
+  const [userId, setUserId] = useState("");
+
+  useEffect(() => {
+    const init = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) setUserId(user.id);
+      
+      if (activeOrgId) {
+        const { data: org } = await supabase.from("organizations").select("slug").eq("id", activeOrgId).single();
+        if (org) setOrgSlug(org.slug);
+
+        const { data: t } = await supabase
+          .from("threads")
+          .select(`*, contacts(first_name, last_name, email)`)
+          .eq("org_id", activeOrgId)
+          .order("updated_at", { ascending: false });
+          
+        if (t) {
+          setThreads(t);
+          if (queryThreadId) {
+            const match = t.find((thread) => thread.id === queryThreadId);
+            if (match) setActiveThread(match);
+          }
+        }
+      }
+    };
+    init();
+  }, [activeOrgId, queryThreadId, supabase]);
+
+  return (
+    <div className="flex h-full w-full absolute inset-0 pt-[65px] md:pt-[73px]">
+      <div 
+        className={`w-full md:w-80 flex-shrink-0 border-r border-line bg-paper h-full overflow-y-auto ${
+          activeThread ? "hidden md:block" : "block"
+        }`}
+      >
+        <div className="px-6 py-6 border-b border-line">
+          <div className="text-xs uppercase mb-1 text-slate tracking-[0.08em] font-body">
+            {currentWorkspace === "agency" ? "Agency Workspace" : "Clinic Workspace"}
+          </div>
+          <h1 className="font-display text-[26px] text-ink">Inbox</h1>
+        </div>
+        
+        {threads.length === 0 ? (
+          <div className="p-6 text-sm text-slate text-center font-body">No active conversations.</div>
+        ) : (
+          threads.map((t) => {
+            const contactName = `${t.contacts.first_name} ${t.contacts.last_name}`;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setActiveThread(t)}
+                className={`w-full text-left px-6 py-4 flex items-start gap-3 border-b border-line transition-colors ${
+                  activeThread?.id === t.id ? "bg-paperDim" : "hover:bg-paperDim/50"
+                }`}
+              >
+                <Avatar name={contactName} size={36} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span className={`text-sm truncate font-body ${t.is_unread ? "font-bold text-ink" : "font-medium text-ink/80"}`}>
+                      {contactName}
+                    </span>
+                    <span className="text-[10px] text-slate font-mono">
+                      {new Date(t.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {t.channel === "email" ? <Mail size={11} className="text-slate flex-shrink-0" /> : <MessageSquare size={11} className="text-slate flex-shrink-0" />}
+                    <span className={`text-xs truncate font-body ${t.is_unread ? "text-ink font-medium" : "text-slate"}`}>
+                      {t.preview || "New conversation"}
+                    </span>
+                  </div>
+                </div>
+                {t.is_unread && (
+                  <span className="w-2 h-2 rounded-full mt-2 flex-shrink-0 bg-berry shadow-[0_0_0_4px_var(--berrySoft)]" />
+                )}
+              </button>
+            );
+          })
+        )}
+      </div>
+
+      {activeThread ? (
+        <InboxThread 
+          threadId={activeThread.id}
+          contactId={activeThread.contact_id}
+          contactName={`${activeThread.contacts.first_name} ${activeThread.contacts.last_name}`}
+          contactEmail={activeThread.contacts.email}
+          orgId={activeOrgId!}
+          orgSlug={orgSlug}
+          userId={userId}
+          onBack={() => setActiveThread(null)}
+        />
+      ) : (
+        <div className="hidden md:flex flex-1 flex-col items-center justify-center bg-paper/50">
+          <Mail size={48} className="text-line mb-4" />
+          <p className="text-slate font-body text-sm">Select a conversation to start reading</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function InboxPage() {
+  return (
+    <AppLayout>
+      <Suspense fallback={<div className="h-full w-full flex items-center justify-center"><div className="animate-spin w-6 h-6 border-2 border-berry border-t-transparent rounded-full" /></div>}>
+        <InboxContent />
+      </Suspense>
+    </AppLayout>
+  );
+}
+</file>
+
+<file path="src/app/layout.tsx">
+import type { Metadata } from "next";
+import { Instrument_Serif, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
+import "./globals.css";
+import { AuthProvider } from "@/components/providers/AuthProvider";
+
+const instrumentSerif = Instrument_Serif({
+  weight: "400",
+  subsets: ["latin"],
+  variable: "--font-display",
+  adjustFontFallback: false, 
+});
+
+const ibmPlexSans = IBM_Plex_Sans({
+  weight: ["400", "500", "600", "700"],
+  subsets: ["latin"],
+  variable: "--font-body",
+});
+
+const ibmPlexMono = IBM_Plex_Mono({
+  weight: ["400", "500", "600"],
+  subsets: ["latin"],
+  variable: "--font-mono",
+});
+
+export const metadata: Metadata = {
+  title: "PyrexxAI CRM",
+  description: "Intelligent CRM and Agent Proxy for Healthcare and MedSpas",
+};
+
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  return (
+    <html lang="en">
+      <body className={`${instrumentSerif.variable} ${ibmPlexSans.variable} ${ibmPlexMono.variable} font-body bg-paper text-ink antialiased`}>
+        <AuthProvider>
+          {children}
+        </AuthProvider>
+      </body>
+    </html>
+  );
+}
+</file>
+
+<file path="src/app/page.tsx">
+"use client";
+import React, { useEffect, useState } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { useAppStore } from "@/store/useAppStore";
+import { SectionTitle } from "@/components/ui/SectionTitle";
+import { StatCard } from "@/components/ui/StatCard";
+import { TrendingUp, Columns, CheckSquare, Phone, Calendar, TrendingDown, Users } from "lucide-react";
+import { createClient } from "@/lib/supabase";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { Avatar } from "@/components/ui/Avatar";
+
+export default function DashboardPage() {
+  const { currentWorkspace, activeOrgId } = useAppStore();
+  const supabase = createClient();
+  
+  const [metrics, setMetrics] = useState<any>({ 
+    openValue: 0, 
+    activeDeals: 0, 
+    winRate: "0%", 
+    chartData: [], 
+    activities: [],
+    leaderboard: [] 
+  });
+
+  useEffect(() => {
+    if (activeOrgId && currentWorkspace === "agency") {
+      fetchAgencyData();
+    }
+  }, [activeOrgId, currentWorkspace]);
+
+  const fetchAgencyData = async () => {
+    // 1. Fetch Deals for Funnel & Value
+    const { data: deals } = await supabase.from("deals").select("*").eq("org_id", activeOrgId);
+    
+    // 2. Fetch Recent Activities (Audit Log) for the feed and Leaderboard
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const { data: activities } = await supabase
+      .from("activities")
+      .select("*, users(full_name)")
+      .eq("org_id", activeOrgId)
+      .order("created_at", { ascending: false });
+
+    if (deals && activities) {
+      const activeDeals = deals.filter(d => d.stage !== "Active Client");
+      const wonDeals = deals.filter(d => d.stage === "Active Client");
+      const openValue = activeDeals.reduce((sum, d) => sum + Number(d.value), 0);
+      
+      const winRate = deals.length > 0 ? Math.round((wonDeals.length / deals.length) * 100) : 0;
+
+      const STAGES = ["New Lead", "Demo Scheduled", "Proposal Sent", "Contract Sent", "Onboarding", "Active Client"];
+      const chartData = STAGES.map(stage => ({
+        stage: stage.replace(" ", "\n"),
+        count: deals.filter(d => d.stage === stage).length
+      }));
+
+      // 3. Compute Leaderboard (Activities today grouped by Rep)
+      const todaysActivities = activities.filter(a => new Date(a.created_at) >= today);
+      const repStats: Record<string, number> = {};
+      
+      todaysActivities.forEach(a => {
+        const name = a.users?.full_name || "Unknown Rep";
+        repStats[name] = (repStats[name] || 0) + 1;
+      });
+
+      const leaderboard = Object.entries(repStats)
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count);
+
+      setMetrics({ 
+        openValue, 
+        activeDeals: activeDeals.length, 
+        winRate: `${winRate}%`,
+        chartData, 
+        activities: activities.slice(0, 10), // Keep last 10 for the feed
+        leaderboard 
+      });
+    }
+  };
+
+  return (
+    <AppLayout>
+      <div className="p-4 md:p-8 max-w-7xl mx-auto">
+        <SectionTitle 
+          eyebrow={currentWorkspace === "agency" ? "Agency Workspace" : "Bloom MedSpa"} 
+          title={currentWorkspace === "agency" ? "Pipeline Overview" : "Front Desk Overview"} 
+        />
+
+        {currentWorkspace === "agency" ? (
+          <>
+            {/* Live Metrics (Fake deltas removed) */}
+            <div className="flex gap-3 md:gap-4 mb-8 flex-wrap">
+              <StatCard label="Open pipeline value" value={`$${metrics.openValue.toLocaleString()}`} icon={TrendingUp} />
+              <StatCard label="Active deals" value={metrics.activeDeals} icon={Columns} />
+              <StatCard label="Activities Today" value={metrics.leaderboard.reduce((s: number, l: any) => s + l.count, 0)} icon={CheckSquare} />
+              <StatCard label="Historical Win Rate" value={metrics.winRate} icon={TrendingUp} />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-6 gap-6">
+              
+              {/* Funnel Chart */}
+              <div className="md:col-span-4 rounded-xl p-6 bg-white border border-line shadow-card flex flex-col">
+                <div className="text-sm font-medium mb-6 text-ink font-body">Pipeline by stage</div>
+                <div className="h-[240px] w-full flex-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={metrics.chartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#E3E1DA" vertical={false} />
+                      <XAxis dataKey="stage" tick={{ fontSize: 11, fontFamily: "var(--font-body)", fill: "#6B6E77" }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 11, fontFamily: "var(--font-mono)", fill: "#6B6E77" }} axisLine={false} tickLine={false} allowDecimals={false} />
+                      <Tooltip cursor={{ fill: "#F5F5F2" }} contentStyle={{ fontFamily: "var(--font-body)", fontSize: 12, borderRadius: 8, border: "1px solid #E3E1DA", boxShadow: "0px 2px 4px rgba(19, 20, 27, 0.04)" }} />
+                      <Bar dataKey="count" fill="#AF3358" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Leaderboard & Feed Column */}
+              <div className="md:col-span-2 flex flex-col gap-6">
+                
+                {/* Rep Leaderboard */}
+                <div className="rounded-xl p-5 bg-ink border border-inkSoft shadow-card">
+                  <div className="flex items-center gap-2 mb-4 text-paper">
+                    <Users size={16} />
+                    <span className="text-sm font-medium font-body">Rep Leaderboard (Today)</span>
+                  </div>
+                  <div className="space-y-3">
+                    {metrics.leaderboard.length === 0 ? (
+                      <div className="text-xs text-slate font-body">No activity logged today.</div>
+                    ) : (
+                      metrics.leaderboard.map((rep: any, idx: number) => (
+                        <div key={idx} className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 text-paper text-sm font-body">
+                            <span className="text-slate text-xs font-mono w-3">{idx + 1}.</span>
+                            <Avatar name={rep.name} size={20} className="bg-ink600" />
+                            {rep.name}
+                          </div>
+                          <span className="text-sage font-mono text-sm">{rep.count}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* System Audit Feed */}
+                <div className="rounded-xl p-5 bg-white border border-line shadow-card flex-1 overflow-hidden flex flex-col">
+                  <div className="text-sm font-medium mb-4 text-ink font-body">Recent System Logs</div>
+                  <div className="space-y-4 flex-1 overflow-y-auto pr-2">
+                    {metrics.activities.length === 0 ? (
+                      <div className="text-xs text-slate font-body text-center mt-4">No recent logs</div>
+                    ) : (
+                      metrics.activities.map((act: any) => (
+                        <div key={act.id} className="flex items-start gap-3">
+                          <Avatar name={act.users?.full_name || "System"} size={26} />
+                          <div>
+                            <div className="text-sm text-ink font-body leading-tight">
+                              <span className="font-medium">{act.users?.full_name || "System"}</span> {act.content.toLowerCase()}
+                            </div>
+                            <div className="text-[10px] text-slate font-mono mt-0.5 text-opacity-70">
+                              {new Date(act.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex gap-3 md:gap-4 mb-8 flex-wrap">
+              <StatCard label="Calls today" value="17" icon={Phone} />
+              <StatCard label="Booked appointments" value="11" icon={Calendar} />
+              <StatCard label="No-show rate" value="4.2%" icon={TrendingDown} />
+              <StatCard label="Revenue this month" value="$28,400" icon={TrendingUp} />
+            </div>
+
+            <div className="rounded-xl p-6 bg-white border border-line shadow-card">
+              <div className="text-sm font-medium mb-4 text-ink font-body">Live Call Intelligence Feed</div>
+              <div className="text-xs text-slate font-body p-4 bg-paperDim rounded border border-line text-center">
+                Retell AI Voice proxy routing will populate this feed. (Data layer pending Retell integration)
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </AppLayout>
+  );
+}
+</file>
+
+<file path="src/app/tasks/page.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { SectionTitle } from "@/components/ui/SectionTitle";
+import { Button } from "@/components/ui/Button";
+import { Plus, CheckCircle2, Circle } from "lucide-react";
+import { useAppStore } from "@/store/useAppStore";
+import { createClient } from "@/lib/supabase";
+import { TaskFormModal } from "@/components/features/tasks/TaskFormModal";
+import { Toaster, toast } from "sonner";
+
+export default function TasksPage() {
+  const { currentWorkspace, activeOrgId, userId } = useAppStore();
+  const supabase = createClient();
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
+  const fetchTasks = async () => {
+    if (!activeOrgId || !userId) return;
+    
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("*, contacts(first_name, last_name)")
+      .eq("org_id", activeOrgId)
+      // If a user is a rep, they might only want to see their own tasks.
+      // For now, we load org tasks but can filter locally or on DB level.
+      .order("due_date", { ascending: true });
+
+    if (!error && data) setTasks(data);
+  };
+
+  useEffect(() => {
+    fetchTasks();
+  }, [activeOrgId, userId]);
+
+  const toggleTask = async (taskId: string, currentStatus: boolean) => {
+    // Optimistic UI
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, is_completed: !currentStatus } : t));
+    
+    const { error } = await supabase.from("tasks").update({ is_completed: !currentStatus }).eq("id", taskId);
+    if (error) {
+      toast.error("Failed to update task");
+      fetchTasks(); // Rollback
+    }
+  };
+
+  // Date bucketing logic
+  const todayStr = new Date().toISOString().split("T")[0];
+  
+  const categorizedTasks = {
+    "Overdue": tasks.filter(t => !t.is_completed && t.due_date < todayStr),
+    "Today": tasks.filter(t => !t.is_completed && t.due_date === todayStr),
+    "Upcoming": tasks.filter(t => !t.is_completed && t.due_date > todayStr),
+    "Completed": tasks.filter(t => t.is_completed)
+  };
+
+  return (
+    <AppLayout>
+      <div className="p-4 md:p-8 max-w-3xl mx-auto">
+        <SectionTitle 
+          eyebrow={currentWorkspace === "agency" ? "Agency Workspace" : "Clinic Workspace"}
+          title="Tasks" 
+          action={<Button icon={Plus} onClick={() => setIsModalOpen(true)}>New Task</Button>} 
+        />
+        
+        {Object.entries(categorizedTasks).map(([group, items]) => {
+          if (items.length === 0) return null;
+          return (
+            <div key={group} className="mb-8">
+              <div className={`text-xs uppercase mb-2 tracking-[0.06em] font-body font-medium ${group === "Overdue" ? "text-berry" : "text-slate"}`}>
+                {group} <span className="ml-1 opacity-60">({items.length})</span>
+              </div>
+              <div className="rounded-xl overflow-hidden border border-line bg-white shadow-card">
+                {items.map((t) => (
+                  <div key={t.id} className="flex items-center gap-3 px-4 py-3 border-b border-line last:border-0 hover:bg-paperDim/30 transition-colors">
+                    <button onClick={() => toggleTask(t.id, t.is_completed)}>
+                      {t.is_completed ? <CheckCircle2 size={18} className="text-sage" /> : <Circle size={18} className="text-slate hover:text-sage transition-colors" />}
+                    </button>
+                    <div className="flex-1">
+                      <div className={`text-sm font-body font-medium ${t.is_completed ? "text-slate line-through" : "text-ink"}`}>
+                        {t.title}
+                      </div>
+                      <div className="text-xs text-slate font-body mt-0.5">
+                        {t.contacts?.first_name} {t.contacts?.last_name}
+                        {group !== "Today" && group !== "Completed" && ` • Due: ${new Date(t.due_date).toLocaleDateString()}`}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+
+        {tasks.length === 0 && (
+          <div className="p-8 text-center text-slate font-body bg-white border border-line rounded-xl shadow-card">
+            No tasks found. Click 'New Task' to schedule a follow-up.
+          </div>
+        )}
+      </div>
+
+      <TaskFormModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSuccess={fetchTasks} />
+      <Toaster position="top-right" richColors />
+    </AppLayout>
+  );
+}
+</file>
+
+<file path="src/components/features/contacts/CsvImportModal.tsx">
+"use client";
+import React, { useState } from "react";
+import Papa from "papaparse";
+import { Modal } from "@/components/ui/Modal";
+import { Button } from "@/components/ui/Button";
+import { Upload, AlertCircle, ArrowRight, CheckCircle2 } from "lucide-react";
+import { createClient } from "@/lib/supabase";
+import { useAppStore } from "@/store/useAppStore";
+import { toast } from "sonner";
+
+type Step = "UPLOAD" | "MAP" | "IMPORTING";
+
+// System fields we natively support
+const STANDARD_FIELDS = [
+  { key: "first_name", label: "First Name" },
+  { key: "last_name", label: "Last Name" },
+  { key: "email", label: "Email Address" },
+  { key: "phone", label: "Phone Number" },
+  { key: "stage", label: "Pipeline Stage" },
+];
+
+export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean, onClose: () => void, onSuccess: () => void }) {
+  const supabase = createClient();
+  const { activeOrgId } = useAppStore();
+  
+  const [step, setStep] = useState<Step>("UPLOAD");
+  const [file, setFile] = useState<File | null>(null);
+  const [csvData, setCsvData] = useState<any[]>([]);
+  const [headers, setHeaders] = useState<string[]>([]);
+  
+  // Maps CSV Header -> DB Column (or "custom:fieldName")
+  const [fieldMap, setFieldMap] = useState<Record<string, string>>({});
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0];
+    if (!selectedFile) return;
+    
+    setFile(selectedFile);
+    Papa.parse(selectedFile, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => {
+        if (results.data.length > 0) {
+          const extractedHeaders = Object.keys(results.data[0] as object);
+          setHeaders(extractedHeaders);
+          setCsvData(results.data);
+          
+          // Auto-guess mapping based on exact string matches
+          const initialMap: Record<string, string> = {};
+          extractedHeaders.forEach(h => {
+            const match = STANDARD_FIELDS.find(sf => sf.key.replace("_", "").toLowerCase() === h.replace(/[\s_]/g, "").toLowerCase());
+            initialMap[h] = match ? match.key : `custom:${h}`; // Default unknown columns to custom JSONB
+          });
+          setFieldMap(initialMap);
+          setStep("MAP");
+        }
+      }
+    });
+  };
+
+  const executeImport = async () => {
+    if (!activeOrgId) return;
+    setStep("IMPORTING");
+
+    const payload = csvData.map((row) => {
+      const contactRecord: any = {
+        org_id: activeOrgId,
+        type: "lead",
+        custom_fields: {}
+      };
+
+      headers.forEach(header => {
+        const target = fieldMap[header];
+        if (!target || target === "skip") return;
+
+        const value = row[header];
+
+        if (target.startsWith("custom:")) {
+          const customKey = target.replace("custom:", "");
+          contactRecord.custom_fields[customKey] = value;
+        } else {
+          contactRecord[target] = value;
+        }
+      });
+
+      // Enforce NOT NULL constraints safely
+      contactRecord.first_name = contactRecord.first_name || "Unknown";
+      contactRecord.last_name = contactRecord.last_name || "Contact";
+      contactRecord.stage = contactRecord.stage || "New Lead";
+      
+      return contactRecord;
+    });
+
+    // Chunk inserts to prevent massive payload rejections
+    const chunkSize = 100;
+    let errorCount = 0;
+
+    for (let i = 0; i < payload.length; i += chunkSize) {
+      const chunk = payload.slice(i, i + chunkSize);
+      const { error } = await supabase.from("contacts").insert(chunk);
+      if (error) errorCount++;
+    }
+
+    if (errorCount > 0) {
+      toast.error(`Import completed with ${errorCount} batch errors.`);
+    } else {
+      toast.success(`Successfully imported ${payload.length} contacts.`);
+    }
+
+    // Reset and close
+    setFile(null);
+    setCsvData([]);
+    setHeaders([]);
+    setStep("UPLOAD");
+    onSuccess();
+    onClose();
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={() => { if(step !== "IMPORTING") onClose(); }} title="Import Contacts Wizard">
+      
+      {step === "UPLOAD" && (
+        <div className="flex flex-col items-center justify-center border-2 border-dashed border-line rounded-xl p-8 bg-paperDim text-center">
+          <Upload size={32} className="text-slate mb-3" />
+          <p className="text-sm text-ink font-medium mb-1">Select a CSV file to map</p>
+          <p className="text-xs text-slate mb-4">You will map columns in the next step.</p>
+          <input 
+            type="file" 
+            accept=".csv"
+            onChange={handleFileUpload}
+            className="block w-full text-xs text-slate file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-ink file:text-paper hover:file:bg-inkSoft cursor-pointer"
+          />
+        </div>
+      )}
+
+      {step === "MAP" && (
+        <div className="flex flex-col max-h-[60vh]">
+          <div className="mb-4 p-3 rounded-lg bg-sageSoft text-sage font-medium text-sm flex items-center gap-2">
+            <CheckCircle2 size={16} /> Found {csvData.length} rows. Map your columns below.
+          </div>
+          
+          <div className="overflow-y-auto flex-1 pr-2 space-y-3">
+            {headers.map(header => (
+              <div key={header} className="flex flex-col sm:flex-row sm:items-center justify-between p-3 rounded-lg border border-line bg-white shadow-sm gap-3">
+                <div className="flex-1 text-sm font-medium text-ink truncate font-mono">
+                  {header}
+                  <div className="text-[10px] text-slate font-body truncate mt-1">
+                    Example: {csvData[0][header] || "—"}
+                  </div>
+                </div>
+                <ArrowRight size={14} className="hidden sm:block text-slate" />
+                <select
+                  value={fieldMap[header]}
+                  onChange={(e) => setFieldMap(prev => ({ ...prev, [header]: e.target.value }))}
+                  className="flex-1 px-3 py-2 rounded-md text-sm outline-none bg-paperDim font-body text-ink border border-transparent focus:border-berry transition-all"
+                >
+                  <option value="skip">-- Skip this column --</option>
+                  <optgroup label="Standard Fields">
+                    {STANDARD_FIELDS.map(sf => (
+                      <option key={sf.key} value={sf.key}>{sf.label}</option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="Custom Data">
+                    <option value={`custom:${header}`}>Save as Custom Field: '{header}'</option>
+                  </optgroup>
+                </select>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex justify-end gap-3 pt-4 border-t border-line mt-4">
+            <Button type="button" variant="ghost" onClick={() => setStep("UPLOAD")}>Back</Button>
+            <Button onClick={executeImport}>Run Import</Button>
+          </div>
+        </div>
+      )}
+
+      {step === "IMPORTING" && (
+        <div className="flex flex-col items-center justify-center p-8 text-center">
+          <div className="w-8 h-8 border-4 border-berry border-t-transparent rounded-full animate-spin mb-4" />
+          <h3 className="text-lg font-medium text-ink font-body">Importing {csvData.length} contacts...</h3>
+          <p className="text-sm text-slate mt-2">Please do not close this window.</p>
+        </div>
+      )}
+    </Modal>
+  );
+}
+</file>
+
+<file path="src/components/features/pipeline/PipelineBoard.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { DndContext, DragEndEvent, closestCorners } from "@dnd-kit/core";
+import { PipelineColumn } from "./PipelineColumn";
+import { createClient } from "@/lib/supabase";
+import { useAppStore } from "@/store/useAppStore";
+import { SectionTitle } from "@/components/ui/SectionTitle";
+import { Button } from "@/components/ui/Button";
+import { Plus } from "lucide-react";
+import { DealFormModal } from "./DealFormModal";
+import { NextActionModal } from "./NextActionModal";
+import { toast } from "sonner";
+
+const STAGES = ["New Lead", "Demo Scheduled", "Proposal Sent", "Contract Sent", "Onboarding", "Active Client"];
+
+export function PipelineBoard() {
+  const supabase = createClient();
+  const { activeOrgId, currentWorkspace } = useAppStore();
+  const [deals, setDeals] = useState<any[]>([]);
+  const [isDealModalOpen, setIsDealModalOpen] = useState(false);
+  
+  // State to hold the interrupted drag event for Enforced Workflows
+  const [pendingMove, setPendingMove] = useState<{ dealId: string, contactId: string, newStage: string, prevStage: string } | null>(null);
+
+  const fetchDeals = async () => {
+    if (!activeOrgId) return;
+    const { data, error } = await supabase
+      .from("deals")
+      .select(`*, contacts (first_name, last_name)`)
+      .eq("org_id", activeOrgId);
+      
+    if (!error && data) setDeals(data);
+  };
+
+  useEffect(() => {
+    fetchDeals();
+  }, [activeOrgId]);
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over) return;
+
+    const dealId = active.id as string;
+    const dealData = active.data.current?.deal;
+    const currentStage = dealData.stage;
+    const newStage = over.id as string;
+
+    if (currentStage === newStage) return;
+
+    // 1. Optimistic UI Update (Snap immediately to new column for snappy UX)
+    setDeals(prev => prev.map(d => d.id === dealId ? { ...d, stage: newStage } : d));
+
+    // 2. Intercept and Enforce Next Action
+    setPendingMove({ 
+      dealId, 
+      contactId: dealData.contact_id, 
+      newStage, 
+      prevStage: currentStage 
+    });
+  };
+
+  const handleCancelMove = () => {
+    // Rollback the optimistic update
+    if (pendingMove) {
+      setDeals(prev => prev.map(d => d.id === pendingMove.dealId ? { ...d, stage: pendingMove.prevStage } : d));
+      setPendingMove(null);
+    }
+  };
+
+  const handleConfirmMove = () => {
+    setPendingMove(null);
+    fetchDeals(); // Re-sync with database to grab the updated next_action
+  };
+
+  const openValue = deals
+    .filter(d => d.stage !== "Active Client")
+    .reduce((sum, d) => sum + Number(d.value), 0);
+
+  return (
+    <div className="flex flex-col h-full w-full">
+      <div className="flex-shrink-0 px-4 md:px-8 pt-4 md:pt-8">
+        <SectionTitle 
+          eyebrow={currentWorkspace === "agency" ? "Agency Workspace" : "Clinic Workspace"}
+          title="Pipeline" 
+          action={
+            <div className="flex items-center gap-4">
+              <span className="hidden sm:inline-block text-sm text-slate font-mono font-medium bg-paperDim px-3 py-1.5 rounded-lg border border-line">
+                Pipeline Value: <span className="text-ink">${openValue.toLocaleString()}</span>
+              </span>
+              <Button icon={Plus} onClick={() => setIsDealModalOpen(true)}>New Deal</Button>
+            </div>
+          } 
+        />
+      </div>
+
+      <div className="flex-1 overflow-x-auto overflow-y-hidden px-4 md:px-8 pb-4">
+        <div className="flex gap-4 md:gap-6 h-full snap-x snap-mandatory md:snap-none w-max">
+          <DndContext collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
+            {STAGES.map((stage) => (
+              <PipelineColumn 
+                key={stage} 
+                stage={stage} 
+                deals={deals.filter(d => d.stage === stage)} 
+              />
+            ))}
+          </DndContext>
+        </div>
+      </div>
+
+      <DealFormModal isOpen={isDealModalOpen} onClose={() => setIsDealModalOpen(false)} onSuccess={fetchDeals} />
+      
+      {pendingMove && (
+        <NextActionModal 
+          isOpen={true}
+          dealId={pendingMove.dealId}
+          contactId={pendingMove.contactId}
+          newStage={pendingMove.newStage}
+          onCancel={handleCancelMove}
+          onSuccess={handleConfirmMove}
+        />
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="src/store/useAppStore.ts">
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+
+type WorkspaceType = 'agency' | 'clinic';
+
+interface AppState {
+  currentWorkspace: WorkspaceType;
+  activeOrgId: string | null;
+  userRole: string | null;
+  userId: string | null;
+  mobileMenuOpen: boolean;
+  setWorkspace: (ws: WorkspaceType) => void;
+  setActiveOrgId: (id: string | null) => void;
+  setUser: (id: string | null, role: string | null) => void;
+  setMobileMenuOpen: (open: boolean) => void;
+}
+
+export const useAppStore = create<AppState>()(
+  persist(
+    (set) => ({
+      currentWorkspace: 'agency',
+      activeOrgId: null,
+      userRole: null,
+      userId: null,
+      mobileMenuOpen: false,
+      setWorkspace: (ws) => set({ currentWorkspace: ws }),
+      setActiveOrgId: (id) => set({ activeOrgId: id }),
+      setUser: (id, role) => set({ userId: id, userRole: role }),
+      setMobileMenuOpen: (open) => set({ mobileMenuOpen: open }),
+    }),
+    {
+      name: 'pyrexx-crm-storage', // Saves to localStorage
+      partialize: (state) => ({ 
+        currentWorkspace: state.currentWorkspace,
+        activeOrgId: state.activeOrgId 
+      }), // Only persist workspace and org preferences
+    }
+  )
+);
+</file>
+
+<file path="tailwind.config.ts">
+import type { Config } from "tailwindcss";
+
+const config: Config = {
+  content: [
+    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        ink: "#13141B",
+        inkSoft: "#1B1D27",
+        ink600: "#3A3D49",
+        paper: "#F5F5F2",
+        paperDim: "#EDECE7",
+        line: "#E3E1DA",
+        berry: "#AF3358",
+        berrySoft: "#F3DEE5",
+        amber: "#D69A32",
+        amberSoft: "#F7ECD6",
+        sage: "#4C8A67",
+        sageSoft: "#DDEBE1",
+        slate: "#6B6E77",
+      },
+      fontFamily: {
+        display: ["var(--font-display)"],
+        body: ["var(--font-body)"],
+        mono: ["var(--font-mono)"],
+      },
+      boxShadow: {
+        card: "0px 2px 4px rgba(19, 20, 27, 0.04)",
+      }
+    },
+  },
+  plugins: [],
+};
+export default config;
+</file>
+
 <file path="src/components/layout/AppLayout.tsx">
 "use client";
 import React from "react";
@@ -2765,10 +4014,11 @@ import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import { MobileTabBar } from "./MobileTabBar";
 import { MobileDrawer } from "./MobileDrawer";
+import { CommandPalette } from "@/components/ui/CommandPalette";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="h-screen w-full flex bg-paper">
+    <div className="h-screen w-full flex bg-paper relative">
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0">
         <Topbar />
@@ -2778,6 +4028,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       </div>
       <MobileTabBar />
       <MobileDrawer />
+      <CommandPalette /> {/* <-- Added Global Search Engine */}
     </div>
   );
 }

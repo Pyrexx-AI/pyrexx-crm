@@ -1,9 +1,10 @@
 export interface SendEmailPayload {
   to: string;
-  from: string; // e.g., 'bloomspa@crm.pyrexxai.com'
+  from: string;
   subject: string;
   text: string;
   html?: string;
+  attachments?: { filename: string; path: string }[];
 }
 
 export interface EmailProvider {

@@ -33,6 +33,8 @@ const config: Config = {
       }
     },
   },
-  plugins: [],
+  plugins: [
+    require('@tailwindcss/typography'), // <-- Ensures TipTap rich text renders beautifully
+  ],
 };
 export default config;

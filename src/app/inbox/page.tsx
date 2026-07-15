@@ -47,13 +47,13 @@ function InboxContent() {
   }, [activeOrgId, queryThreadId, supabase]);
 
   return (
-    <div className="flex h-full w-full absolute inset-0 pt-[65px] md:pt-[73px]">
+    <div className="flex-1 flex h-full w-full bg-paper">
       <div 
-        className={`w-full md:w-80 flex-shrink-0 border-r border-line bg-paper h-full overflow-y-auto ${
+        className={`w-full md:w-80 flex-shrink-0 border-r border-line h-full overflow-y-auto ${
           activeThread ? "hidden md:block" : "block"
         }`}
       >
-        <div className="px-6 py-6 border-b border-line">
+        <div className="px-6 py-6 border-b border-line sticky top-0 bg-paper z-10">
           <div className="text-xs uppercase mb-1 text-slate tracking-[0.08em] font-body">
             {currentWorkspace === "agency" ? "Agency Workspace" : "Clinic Workspace"}
           </div>
@@ -64,7 +64,7 @@ function InboxContent() {
           <div className="p-6 text-sm text-slate text-center font-body">No active conversations.</div>
         ) : (
           threads.map((t) => {
-            const contactName = `${t.contacts.first_name} ${t.contacts.last_name}`;
+            const contactName = `${t.contacts?.first_name || 'Unknown'} ${t.contacts?.last_name || ''}`;
             return (
               <button
                 key={t.id}
@@ -103,16 +103,16 @@ function InboxContent() {
         <InboxThread 
           threadId={activeThread.id}
           contactId={activeThread.contact_id}
-          contactName={`${activeThread.contacts.first_name} ${activeThread.contacts.last_name}`}
-          contactEmail={activeThread.contacts.email}
+          contactName={`${activeThread.contacts?.first_name || 'Unknown'} ${activeThread.contacts?.last_name || ''}`}
+          contactEmail={activeThread.contacts?.email || ''}
           orgId={activeOrgId!}
           orgSlug={orgSlug}
           userId={userId}
           onBack={() => setActiveThread(null)}
         />
       ) : (
-        <div className="hidden md:flex flex-1 flex-col items-center justify-center bg-paper/50">
-          <Mail size={48} className="text-line mb-4" />
+        <div className="hidden md:flex flex-1 flex-col items-center justify-center bg-paperDim/30">
+          <Mail size={48} className="text-slate/30 mb-4" />
           <p className="text-slate font-body text-sm">Select a conversation to start reading</p>
         </div>
       )}
@@ -123,7 +123,7 @@ function InboxContent() {
 export default function InboxPage() {
   return (
     <AppLayout>
-      <Suspense fallback={<div className="h-full w-full flex items-center justify-center"><div className="animate-spin w-6 h-6 border-2 border-berry border-t-transparent rounded-full" /></div>}>
+      <Suspense fallback={<div className="flex-1 flex items-center justify-center"><div className="animate-spin w-6 h-6 border-2 border-berry border-t-transparent rounded-full" /></div>}>
         <InboxContent />
       </Suspense>
     </AppLayout>

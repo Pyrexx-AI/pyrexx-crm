@@ -12,6 +12,7 @@ export class ResendProvider implements EmailProvider {
         subject: payload.subject,
         text: payload.text,
         html: payload.html || payload.text,
+        attachments: payload.attachments, // Resend natively supports remote URL paths!
       });
 
       if (data.error) {

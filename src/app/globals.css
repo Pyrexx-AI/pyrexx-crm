@@ -12,7 +12,6 @@
     width: 100%;
   }
 
-  /* Custom Scrollbar for a premium feel */
   ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
@@ -21,10 +20,16 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #E3E1DA; /* line color */
+    background: #E3E1DA; 
     border-radius: 4px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #6B6E77; /* slate color */
+    background: #6B6E77; 
+  }
+}
+
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
   }
 }

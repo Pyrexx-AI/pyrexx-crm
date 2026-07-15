@@ -14,6 +14,7 @@ const taskSchema = z.object({
   title: z.string().min(1, "Task description is required"),
   due_date: z.string().min(1, "Due date is required"),
   contact_id: z.string().min(1, "Please select a contact"),
+  sync_calendar: z.boolean().optional(),
 });
 
 type TaskFormValues = z.infer<typeof taskSchema>;
@@ -23,17 +24,19 @@ export function TaskFormModal({ isOpen, onClose, onSuccess }: { isOpen: boolean;
   const { activeOrgId, userId } = useAppStore();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [contacts, setContacts] = useState<{ id: string, first_name: string, last_name: string }[]>([]);
+  const [hasCalendar, setHasCalendar] = useState(false);
 
   const { register, handleSubmit, formState: { errors }, reset } = useForm<TaskFormValues>({
     resolver: zodResolver(taskSchema),
+    defaultValues: { sync_calendar: true }
   });
 
   useEffect(() => {
-    if (isOpen && activeOrgId) {
-      supabase.from("contacts").select("id, first_name, last_name").eq("org_id", activeOrgId)
-        .then(({ data }) => setContacts(data || []));
+    if (isOpen && activeOrgId && userId) {
+      supabase.from("contacts").select("id, first_name, last_name").eq("org_id", activeOrgId).then(({ data }) => setContacts(data || []));
+      supabase.from("users").select("calendar_connected").eq("id", userId).single().then(({ data }) => setHasCalendar(!!data?.calendar_connected));
     }
-  }, [isOpen, activeOrgId, supabase]);
+  }, [isOpen, activeOrgId, userId, supabase]);
 
   const onSubmit = async (data: TaskFormValues) => {
     if (!activeOrgId || !userId) return;
@@ -42,8 +45,18 @@ export function TaskFormModal({ isOpen, onClose, onSuccess }: { isOpen: boolean;
     const { error } = await supabase.from("tasks").insert({
       org_id: activeOrgId,
       assignee_id: userId,
-      ...data
+      title: data.title,
+      due_date: data.due_date,
+      contact_id: data.contact_id
     });
+
+    if (!error && data.sync_calendar && hasCalendar) {
+      await fetch("/api/calendar/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, title: data.title, dueDate: data.due_date })
+      });
+    }
 
     setIsSubmitting(false);
 
@@ -78,7 +91,14 @@ export function TaskFormModal({ isOpen, onClose, onSuccess }: { isOpen: boolean;
 
         <Input label="Due Date" type="date" {...register("due_date")} error={errors.due_date?.message} />
         
-        <div className="flex justify-end gap-3 pt-4 border-t border-line">
+        {hasCalendar && (
+          <div className="flex items-center gap-2 mt-2">
+            <input type="checkbox" id="sync_calendar" {...register("sync_calendar")} className="w-4 h-4 text-berry rounded border-line focus:ring-berry" />
+            <label htmlFor="sync_calendar" className="text-sm text-ink font-body">Add to connected calendar</label>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-3 pt-4 border-t border-line mt-2">
           <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
           <Button type="submit" disabled={isSubmitting}>
             {isSubmitting ? "Saving..." : "Create Task"}

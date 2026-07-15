@@ -57,7 +57,6 @@ export default function ContactDetailPage() {
       .select("*, users(full_name)")
       .eq("contact_id", id);
       
-    // Map to a common timeline interface
     let mergedTimeline = (activities || []).map(a => ({
       id: a.id,
       date: new Date(a.created_at),
@@ -137,8 +136,8 @@ export default function ContactDetailPage() {
   return (
     <AppLayout>
       <div className="p-4 md:p-8 max-w-5xl mx-auto">
-        <button onClick={() => router.back()} className="flex items-center gap-1 text-sm mb-6 text-slate font-body hover:text-ink transition-colors">
-          <ChevronLeft size={15} /> Back
+        <button onClick={() => router.push('/contacts')} className="flex items-center gap-1 text-sm mb-6 text-slate font-body hover:text-ink transition-colors">
+          <ChevronLeft size={15} /> Back to Contacts
         </button>
 
         <div className="flex items-start gap-4 mb-8 flex-wrap">

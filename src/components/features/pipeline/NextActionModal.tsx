@@ -1,5 +1,5 @@
 "use client";
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -13,6 +13,7 @@ import { toast } from "sonner";
 const nextActionSchema = z.object({
   title: z.string().min(1, "You must specify the next action to take"),
   due_date: z.string().min(1, "You must set a due date"),
+  sync_calendar: z.boolean().optional(),
 });
 
 type NextActionValues = z.infer<typeof nextActionSchema>;
@@ -30,51 +31,53 @@ export function NextActionModal({ isOpen, dealId, contactId, newStage, onCancel,
   const supabase = createClient();
   const { activeOrgId, userId } = useAppStore();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [hasCalendar, setHasCalendar] = useState(false);
 
   const { register, handleSubmit, formState: { errors }, reset } = useForm<NextActionValues>({
     resolver: zodResolver(nextActionSchema),
+    defaultValues: { sync_calendar: true }
   });
+
+  useEffect(() => {
+    if (isOpen && userId) {
+      supabase.from("users").select("calendar_connected").eq("id", userId).single().then(({ data }) => setHasCalendar(!!data?.calendar_connected));
+    }
+  }, [isOpen, userId, supabase]);
 
   const onSubmit = async (data: NextActionValues) => {
     if (!activeOrgId || !userId) return;
     setIsSubmitting(true);
 
-    // 1. Update the Deal Stage and Next Action text
     const { error: dealError } = await supabase
       .from("deals")
-      .update({ 
-        stage: newStage, 
-        next_action: data.title,
-        updated_at: new Date().toISOString()
-      })
+      .update({ stage: newStage, next_action: data.title, updated_at: new Date().toISOString() })
       .eq("id", dealId);
 
     if (dealError) {
-      toast.error("Failed to move deal", { description: dealError.message });
+      toast.error("Failed to move deal");
       setIsSubmitting(false);
       return;
     }
 
-    // 2. Create a persistent Task assigned to the Rep
-    const { error: taskError } = await supabase
-      .from("tasks")
-      .insert({
-        org_id: activeOrgId,
-        contact_id: contactId,
-        assignee_id: userId,
-        title: data.title,
-        due_date: data.due_date,
-        is_completed: false
+    await supabase.from("tasks").insert({
+      org_id: activeOrgId,
+      contact_id: contactId,
+      assignee_id: userId,
+      title: data.title,
+      due_date: data.due_date,
+      is_completed: false
+    });
+
+    if (data.sync_calendar && hasCalendar) {
+      await fetch("/api/calendar/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, title: data.title, dueDate: data.due_date })
       });
-
-    setIsSubmitting(false);
-
-    if (taskError) {
-      toast.error("Deal moved, but failed to create task");
-    } else {
-      toast.success("Deal advanced and task created!");
     }
 
+    setIsSubmitting(false);
+    toast.success("Deal advanced and task created!");
     reset();
     onSuccess();
   };
@@ -87,21 +90,17 @@ export function NextActionModal({ isOpen, dealId, contactId, newStage, onCancel,
       </div>
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-        <Input 
-          label="What is the next action?" 
-          placeholder="e.g. Call to confirm pricing details" 
-          {...register("title")} 
-          error={errors.title?.message} 
-          autoFocus 
-        />
-        <Input 
-          label="Due Date" 
-          type="date" 
-          {...register("due_date")} 
-          error={errors.due_date?.message} 
-        />
+        <Input label="What is the next action?" placeholder="e.g. Call to confirm pricing details" {...register("title")} error={errors.title?.message} autoFocus />
+        <Input label="Due Date" type="date" {...register("due_date")} error={errors.due_date?.message} />
         
-        <div className="flex justify-end gap-3 pt-4 border-t border-line">
+        {hasCalendar && (
+          <div className="flex items-center gap-2 mt-2">
+            <input type="checkbox" id="sync_calendar_deal" {...register("sync_calendar")} className="w-4 h-4 text-berry rounded border-line focus:ring-berry" />
+            <label htmlFor="sync_calendar_deal" className="text-sm text-ink font-body">Add to connected calendar</label>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-3 pt-4 border-t border-line mt-2">
           <Button type="button" variant="ghost" onClick={onCancel}>Cancel Move</Button>
           <Button type="submit" disabled={isSubmitting}>
             {isSubmitting ? "Saving..." : "Confirm & Move Deal"}

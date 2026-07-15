@@ -5,7 +5,7 @@ import { PulseTrace } from "@/components/ui/PulseTrace";
 import { Avatar } from "@/components/ui/Avatar";
 import { 
   LayoutDashboard, Users, Columns, Inbox, CheckSquare, 
-  BarChart3, PhoneOutgoing, Building2, Phone
+  BarChart3, PhoneOutgoing, Building2, Phone, Settings, Blocks
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -23,7 +23,7 @@ const AGENCY_NAV = [
 
 const CLINIC_NAV = [
   { key: "clinicDashboard", label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { key: "patients", label: "Patients", href: "/patients", icon: Users },
+  { key: "patients", label: "Patients", href: "/contacts", icon: Users },
   { key: "calls", label: "Calls", href: "/calls", icon: Phone },
   { key: "inbox", label: "Inbox", href: "/inbox", icon: Inbox },
   { key: "dialer", label: "Dialer", href: "/dialer", icon: PhoneOutgoing },
@@ -36,28 +36,24 @@ export function Sidebar() {
   const nav = currentWorkspace === "agency" ? AGENCY_NAV : CLINIC_NAV;
 
   return (
-    <div className="hidden md:flex w-60 flex-shrink-0 flex-col h-full bg-ink">
+    <div className="hidden md:flex w-60 flex-shrink-0 flex-col h-full bg-ink z-20">
       <div className="px-5 pt-6 pb-5 flex items-center gap-2">
         <PulseTrace sentiment="positive" size="sm" />
         <span className="font-body font-bold text-paper text-[15px]">Pyrexx</span>
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-inkSoft text-slate font-mono">
-          CRM
-        </span>
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-inkSoft text-slate font-mono">CRM</span>
       </div>
 
       <div className="px-4 mb-5">
         <div className="flex rounded-lg p-0.5 bg-inkSoft">
           {[
             { key: "agency", label: "Agency" },
-            { key: "clinic", label: "Bloom MedSpa" }, // In production, map this from DB
+            { key: "clinic", label: "Bloom MedSpa" },
           ].map((w) => (
             <button
               key={w.key}
               onClick={() => setWorkspace(w.key as "agency" | "clinic")}
               className={`flex-1 text-xs py-1.5 rounded-md transition-colors font-body ${
-                currentWorkspace === w.key
-                  ? "text-ink bg-paper"
-                  : "text-slate bg-transparent"
+                currentWorkspace === w.key ? "text-ink bg-paper" : "text-slate bg-transparent hover:text-paper"
               }`}
             >
               {w.label}
@@ -78,9 +74,7 @@ export function Sidebar() {
                 active ? "text-paper bg-inkSoft" : "text-slate bg-transparent hover:text-paper hover:bg-inkSoft/50"
               }`}
             >
-              {active && (
-                <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-berry" />
-              )}
+              {active && <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-berry" />}
               <Icon size={16} />
               {item.label}
             </Link>
@@ -88,10 +82,31 @@ export function Sidebar() {
         })}
       </nav>
 
+      <div className="px-3 pb-4 space-y-0.5">
+        <Link
+          href="/settings/integrations"
+          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors font-body ${
+            pathname === "/settings/integrations" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
+          }`}
+        >
+          <Blocks size={16} />
+          Integrations & Auto
+        </Link>
+        <Link
+          href="/settings/team"
+          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors font-body ${
+            pathname === "/settings/team" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
+          }`}
+        >
+          <Settings size={16} />
+          Settings & Team
+        </Link>
+      </div>
+
       <div className="p-4 flex items-center gap-2.5 border-t border-inkSoft">
-        <Avatar name="Pyrexx Gambo" size={30} />
+        <Avatar name="Pyrexx Admin" size={30} />
         <div className="text-xs font-body">
-          <div className="text-paper font-medium">Pyrexx Gambo</div>
+          <div className="text-paper font-medium">Pyrexx Admin</div>
           <div className="text-slate">Owner</div>
         </div>
       </div>

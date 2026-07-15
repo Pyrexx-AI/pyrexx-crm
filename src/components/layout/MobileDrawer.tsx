@@ -8,7 +8,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { 
   LayoutDashboard, Users, Columns, Inbox, CheckSquare, 
-  BarChart3, PhoneOutgoing, Building2, Phone
+  BarChart3, PhoneOutgoing, Building2, Phone, Settings, Blocks
 } from "lucide-react";
 
 const AGENCY_NAV = [
@@ -69,7 +69,7 @@ export function MobileDrawer() {
                 setMobileMenuOpen(false);
               }}
               className={`flex-1 text-xs py-1.5 rounded-md transition-colors font-body ${
-                currentWorkspace === w.key ? "text-ink bg-paper" : "text-slate bg-transparent"
+                currentWorkspace === w.key ? "text-ink bg-paper" : "text-slate bg-transparent hover:text-paper"
               }`}
             >
               {w.label}
@@ -87,21 +87,43 @@ export function MobileDrawer() {
               key={item.key}
               href={item.href}
               onClick={() => setMobileMenuOpen(false)}
-              className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body ${
-                active ? "text-berry bg-inkSoft" : "text-paper"
+              className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${
+                active ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
               }`}
             >
               <Icon size={18} /> {item.label}
             </Link>
           );
         })}
+        
+        {/* Added Integrations & Team Settings for Mobile */}
+        <div className="my-2 border-t border-inkSoft/50 pt-2" />
+        
+        <Link
+          href="/settings/integrations"
+          onClick={() => setMobileMenuOpen(false)}
+          className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${
+            pathname === "/settings/integrations" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
+          }`}
+        >
+          <Blocks size={18} /> Integrations & Auto
+        </Link>
+        <Link
+          href="/settings/team"
+          onClick={() => setMobileMenuOpen(false)}
+          className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${
+            pathname === "/settings/team" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
+          }`}
+        >
+          <Settings size={18} /> Settings & Team
+        </Link>
       </div>
 
       <div className="p-4 flex items-center gap-2.5 border-t border-inkSoft pb-safe">
-        <Avatar name="Pyrexx Gambo" size={30} />
+        <Avatar name="Pyrexx User" size={30} />
         <div className="text-xs font-body">
-          <div className="text-paper">Pyrexx Gambo</div>
-          <div className="text-slate">Owner</div>
+          <div className="text-paper">Pyrexx User</div>
+          <div className="text-slate">Active Session</div>
         </div>
       </div>
     </div>
