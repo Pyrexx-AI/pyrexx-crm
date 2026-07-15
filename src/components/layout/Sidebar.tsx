@@ -31,9 +31,25 @@ const CLINIC_NAV = [
 ];
 
 export function Sidebar() {
-  const { currentWorkspace, setWorkspace } = useAppStore();
+  const { currentWorkspace, activeOrgId, workspaces, setWorkspace, setActiveOrgId } = useAppStore();
   const pathname = usePathname();
   const nav = currentWorkspace === "agency" ? AGENCY_NAV : CLINIC_NAV;
+
+  const handleWorkspaceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const selectedOrgId = e.target.value;
+    const targetWorkspace = workspaces.find((w) => w.id === selectedOrgId);
+    
+    if (targetWorkspace) {
+      setActiveOrgId(targetWorkspace.id);
+      setWorkspace(targetWorkspace.type);
+      // We force a hard reload here to ensure all data and roles re-fetch cleanly 
+      // into the new environment context.
+      window.location.href = "/"; 
+    }
+  };
+
+  const agencyWorkspaces = workspaces.filter(w => w.type === 'agency');
+  const clinicWorkspaces = workspaces.filter(w => w.type === 'clinic');
 
   return (
     <div className="hidden md:flex w-60 flex-shrink-0 flex-col h-full bg-ink z-20">
@@ -44,21 +60,33 @@ export function Sidebar() {
       </div>
 
       <div className="px-4 mb-5">
-        <div className="flex rounded-lg p-0.5 bg-inkSoft">
-          {[
-            { key: "agency", label: "Agency" },
-            { key: "clinic", label: "Bloom MedSpa" },
-          ].map((w) => (
-            <button
-              key={w.key}
-              onClick={() => setWorkspace(w.key as "agency" | "clinic")}
-              className={`flex-1 text-xs py-1.5 rounded-md transition-colors font-body ${
-                currentWorkspace === w.key ? "text-ink bg-paper" : "text-slate bg-transparent hover:text-paper"
-              }`}
-            >
-              {w.label}
-            </button>
-          ))}
+        <div className="relative w-full">
+          <select
+            value={activeOrgId || ""}
+            onChange={handleWorkspaceChange}
+            className="w-full appearance-none bg-inkSoft text-paper text-sm py-2 px-3 pr-8 rounded-md outline-none focus:ring-2 focus:ring-berry transition-all font-body cursor-pointer border border-transparent hover:border-slate/30"
+          >
+            {agencyWorkspaces.length > 0 && (
+              <optgroup label="Agency">
+                {agencyWorkspaces.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name}</option>
+                ))}
+              </optgroup>
+            )}
+            
+            {clinicWorkspaces.length > 0 && (
+              <optgroup label="Client Clinics">
+                {clinicWorkspaces.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+          <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-slate">
+            <svg className="w-4 h-4 fill-current" viewBox="0 0 20 20">
+              <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
+            </svg>
+          </div>
         </div>
       </div>
 
@@ -107,7 +135,7 @@ export function Sidebar() {
         <Avatar name="Pyrexx Admin" size={30} />
         <div className="text-xs font-body">
           <div className="text-paper font-medium">Pyrexx Admin</div>
-          <div className="text-slate">Owner</div>
+          <div className="text-slate">Active Session</div>
         </div>
       </div>
     </div>

@@ -26,15 +26,17 @@ export async function middleware(request: NextRequest) {
 
   const { data: { user } } = await supabase.auth.getUser()
 
-  // Protect all routes except auth routes and API webhooks
   const isAuthRoute = request.nextUrl.pathname.startsWith('/auth')
   const isApiRoute = request.nextUrl.pathname.startsWith('/api')
+  const isUpdatePasswordRoute = request.nextUrl.pathname === '/auth/update-password'
 
+  // Block unauthenticated users
   if (!user && !isAuthRoute && !isApiRoute) {
     return NextResponse.redirect(new URL('/auth/login', request.url))
   }
 
-  if (user && isAuthRoute) {
+  // Prevent authenticated users from going to login, BUT allow them to go to update-password
+  if (user && isAuthRoute && !isUpdatePasswordRoute) {
     return NextResponse.redirect(new URL('/', request.url))
   }
 

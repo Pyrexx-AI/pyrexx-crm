@@ -10,14 +10,15 @@ interface PipelineCardProps {
     id: string;
     name: string;
     value: number;
-    stage: string; // <-- Added to fix the build error
-    next_action: string | null; // <-- Made nullable for DB safety
+    stage: string; 
+    next_action: string | null; 
     is_overdue: boolean;
     contacts: { first_name: string; last_name: string } | null;
   };
+  onClick: (deal: any) => void; // <-- Added onClick prop
 }
 
-export function PipelineCard({ deal }: PipelineCardProps) {
+export function PipelineCard({ deal, onClick }: PipelineCardProps) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: deal.id,
     data: { stage: deal.stage, deal },
@@ -37,20 +38,24 @@ export function PipelineCard({ deal }: PipelineCardProps) {
       style={style}
       {...attributes}
       {...listeners}
+      onPointerUp={(e) => {
+        // Prevent click if we were just dragging
+        if (!isDragging) onClick(deal);
+      }}
       className="rounded-lg p-3 cursor-grab active:cursor-grabbing bg-white border border-line shadow-sm hover:shadow-md transition-shadow relative"
     >
-      <div className="flex items-center gap-2 mb-2">
+      <div className="flex items-center gap-2 mb-2 pointer-events-none">
         <Avatar name={contactName} size={22} />
         <span className="text-sm text-ink font-body font-medium truncate">{deal.name}</span>
       </div>
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-2 pointer-events-none">
         <span className="text-sm text-ink font-mono font-medium">
           ${Number(deal.value).toLocaleString()}
         </span>
         {deal.is_overdue && <Badge variant="berry">Overdue</Badge>}
       </div>
       {deal.next_action && (
-        <div className="text-xs text-slate font-body mt-2 truncate">
+        <div className="text-xs text-slate font-body mt-2 truncate pointer-events-none">
           <span className="font-medium">Next:</span> {deal.next_action}
         </div>
       )}

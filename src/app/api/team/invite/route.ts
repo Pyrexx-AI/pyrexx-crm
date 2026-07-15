@@ -21,9 +21,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: inviteError.message }, { status: 400 });
     }
 
-    const userId = inviteData.user.id;
+    // FIX: Safely unwrap the user ID to prevent strict null-check build failures
+    const userId = inviteData?.user?.id;
+    
+    if (!userId) {
+      return NextResponse.json({ error: "Failed to resolve user ID from invite response." }, { status: 500 });
+    }
 
-    // 2. Ensure they exist in public.users (Just in case the trigger lagged)
+    // 2. Ensure they exist in public.users
     await supabaseAdmin.from('users').upsert({ id: userId, email: email, full_name: email.split('@')[0] });
 
     // 3. Assign them to the organization in memberships

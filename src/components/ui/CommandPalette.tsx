@@ -7,29 +7,26 @@ import { useAppStore } from "@/store/useAppStore";
 import { Badge } from "@/components/ui/Badge";
 
 export function CommandPalette() {
-  const [isOpen, setIsOpen] = useState(false);
+  const { commandPaletteOpen, setCommandPaletteOpen, activeOrgId, currentWorkspace } = useAppStore();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<{ type: string; id: string; title: string; subtitle: string }[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   
   const router = useRouter();
   const supabase = createClient();
-  const { activeOrgId, currentWorkspace } = useAppStore();
 
-  // 1. Listen for Cmd+K or Ctrl+K
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        setIsOpen((prev) => !prev);
+        setCommandPaletteOpen(!commandPaletteOpen);
       }
-      if (e.key === "Escape") setIsOpen(false);
+      if (e.key === "Escape") setCommandPaletteOpen(false);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [commandPaletteOpen, setCommandPaletteOpen]);
 
-  // 2. Perform Global Search
   useEffect(() => {
     if (!query.trim() || !activeOrgId) {
       setResults([]);
@@ -41,7 +38,6 @@ export function CommandPalette() {
       const searchQ = query.trim();
       let combinedResults: any[] = [];
 
-      // A. Search Contacts (using the tsvector built in Phase 1)
       const { data: contacts } = await supabase
         .from("contacts")
         .select("id, first_name, last_name, email")
@@ -50,15 +46,15 @@ export function CommandPalette() {
         .limit(5);
 
       if (contacts) {
-        combinedResults.push(...contacts.map(c => ({
-          type: "Contact",
-          id: c.id,
-          title: `${c.first_name} ${c.last_name}`,
+        const mappedContacts = contacts.map(c => ({
+          type: "Contact", 
+          id: c.id, 
+          title: `${c.first_name} ${c.last_name}`, 
           subtitle: c.email || "No email"
-        })));
+        }));
+        combinedResults.push(...mappedContacts);
       }
 
-      // B. Search Deals (ilike match on name)
       const { data: deals } = await supabase
         .from("deals")
         .select("id, name, stage")
@@ -67,15 +63,15 @@ export function CommandPalette() {
         .limit(3);
 
       if (deals) {
-        combinedResults.push(...deals.map(d => ({
-          type: "Deal",
-          id: "pipeline", // Routes to pipeline board for now
-          title: d.name,
+        const mappedDeals = deals.map(d => ({
+          type: "Deal", 
+          id: "pipeline", 
+          title: d.name, 
           subtitle: `Stage: ${d.stage}`
-        })));
+        }));
+        combinedResults.push(...mappedDeals);
       }
 
-      // C. Search Sub-Accounts (Only if Agency Workspace)
       if (currentWorkspace === "agency") {
         const { data: orgs } = await supabase
           .from("organizations")
@@ -85,12 +81,13 @@ export function CommandPalette() {
           .limit(3);
 
         if (orgs) {
-          combinedResults.push(...orgs.map(o => ({
-            type: "Account",
-            id: o.id,
-            title: o.name,
+          const mappedOrgs = orgs.map(o => ({
+            type: "Account", 
+            id: o.id, 
+            title: o.name, 
             subtitle: `${o.slug}@app.pyrexxai.com`
-          })));
+          }));
+          combinedResults.push(...mappedOrgs);
         }
       }
 
@@ -103,21 +100,18 @@ export function CommandPalette() {
   }, [query, activeOrgId, currentWorkspace, supabase]);
 
   const handleSelect = (result: any) => {
-    setIsOpen(false);
+    setCommandPaletteOpen(false);
     setQuery("");
-    
     if (result.type === "Contact") router.push(`/contacts/${result.id}`);
     if (result.type === "Deal") router.push(`/pipeline`);
     if (result.type === "Account") router.push(`/accounts`);
   };
 
-  if (!isOpen) return null;
+  if (!commandPaletteOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-start justify-center pt-24 pb-4 px-4 bg-ink/60 backdrop-blur-sm" onClick={() => setIsOpen(false)}>
+    <div className="fixed inset-0 z-[100] flex items-start justify-center pt-24 pb-4 px-4 bg-ink/60 backdrop-blur-sm" onClick={() => setCommandPaletteOpen(false)}>
       <div className="w-full max-w-2xl bg-white rounded-xl shadow-2xl overflow-hidden border border-line flex flex-col" onClick={e => e.stopPropagation()}>
-        
-        {/* Search Input */}
         <div className="flex items-center px-4 border-b border-line bg-paperDim/30">
           <Search size={18} className="text-slate flex-shrink-0" />
           <input
@@ -127,17 +121,13 @@ export function CommandPalette() {
             placeholder="Search contacts, deals, or accounts..."
             className="w-full bg-transparent border-none outline-none px-4 py-4 text-ink font-body placeholder:text-slate"
           />
-          <button onClick={() => setIsOpen(false)} className="p-1 text-slate hover:text-ink transition-colors rounded">
+          <button onClick={() => setCommandPaletteOpen(false)} className="p-1 text-slate hover:text-ink transition-colors rounded">
             <X size={16} />
           </button>
         </div>
-
-        {/* Results */}
         <div className="max-h-[60vh] overflow-y-auto p-2">
           {query.trim() === "" ? (
-            <div className="p-8 text-center text-sm text-slate font-body">
-              Start typing to search globally...
-            </div>
+            <div className="p-8 text-center text-sm text-slate font-body">Start typing to search globally...</div>
           ) : results.length > 0 ? (
             <div className="space-y-1">
               {results.map((r, i) => (

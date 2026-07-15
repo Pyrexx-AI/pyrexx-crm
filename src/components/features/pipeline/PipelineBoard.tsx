@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { Plus } from "lucide-react";
 import { DealFormModal } from "./DealFormModal";
 import { NextActionModal } from "./NextActionModal";
-import { toast } from "sonner";
+import { EditDealModal } from "./EditDealModal";
 
 const STAGES = ["New Lead", "Demo Scheduled", "Proposal Sent", "Contract Sent", "Onboarding", "Active Client"];
 
@@ -18,8 +18,7 @@ export function PipelineBoard() {
   const { activeOrgId, currentWorkspace } = useAppStore();
   const [deals, setDeals] = useState<any[]>([]);
   const [isDealModalOpen, setIsDealModalOpen] = useState(false);
-  
-  // State to hold the interrupted drag event for Enforced Workflows
+  const [editingDeal, setEditingDeal] = useState<any | null>(null);
   const [pendingMove, setPendingMove] = useState<{ dealId: string, contactId: string, newStage: string, prevStage: string } | null>(null);
 
   const fetchDeals = async () => {
@@ -27,14 +26,13 @@ export function PipelineBoard() {
     const { data, error } = await supabase
       .from("deals")
       .select(`*, contacts (first_name, last_name)`)
-      .eq("org_id", activeOrgId);
+      .eq("org_id", activeOrgId)
+      .order("updated_at", { ascending: false }); // Important for Infinite Kanban logic
       
     if (!error && data) setDeals(data);
   };
 
-  useEffect(() => {
-    fetchDeals();
-  }, [activeOrgId]);
+  useEffect(() => { fetchDeals(); }, [activeOrgId]);
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -47,20 +45,11 @@ export function PipelineBoard() {
 
     if (currentStage === newStage) return;
 
-    // 1. Optimistic UI Update (Snap immediately to new column for snappy UX)
     setDeals(prev => prev.map(d => d.id === dealId ? { ...d, stage: newStage } : d));
-
-    // 2. Intercept and Enforce Next Action
-    setPendingMove({ 
-      dealId, 
-      contactId: dealData.contact_id, 
-      newStage, 
-      prevStage: currentStage 
-    });
+    setPendingMove({ dealId, contactId: dealData.contact_id, newStage, prevStage: currentStage });
   };
 
   const handleCancelMove = () => {
-    // Rollback the optimistic update
     if (pendingMove) {
       setDeals(prev => prev.map(d => d.id === pendingMove.dealId ? { ...d, stage: pendingMove.prevStage } : d));
       setPendingMove(null);
@@ -69,12 +58,10 @@ export function PipelineBoard() {
 
   const handleConfirmMove = () => {
     setPendingMove(null);
-    fetchDeals(); // Re-sync with database to grab the updated next_action
+    fetchDeals();
   };
 
-  const openValue = deals
-    .filter(d => d.stage !== "Active Client")
-    .reduce((sum, d) => sum + Number(d.value), 0);
+  const openValue = deals.filter(d => d.stage !== "Active Client").reduce((sum, d) => sum + Number(d.value), 0);
 
   return (
     <div className="flex flex-col h-full w-full">
@@ -96,28 +83,35 @@ export function PipelineBoard() {
       <div className="flex-1 overflow-x-auto overflow-y-hidden px-4 md:px-8 pb-4">
         <div className="flex gap-4 md:gap-6 h-full snap-x snap-mandatory md:snap-none w-max">
           <DndContext collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
-            {STAGES.map((stage) => (
-              <PipelineColumn 
-                key={stage} 
-                stage={stage} 
-                deals={deals.filter(d => d.stage === stage)} 
-              />
-            ))}
+            {STAGES.map((stage) => {
+              // The "Infinite Kanban" Fix
+              let stageDeals = deals.filter(d => d.stage === stage);
+              let hiddenCount = 0;
+              
+              if (stage === "Active Client" && stageDeals.length > 15) {
+                hiddenCount = stageDeals.length - 15;
+                stageDeals = stageDeals.slice(0, 15);
+              }
+
+              return (
+                <PipelineColumn 
+                  key={stage} 
+                  stage={stage} 
+                  deals={stageDeals} 
+                  onDealClick={(d) => setEditingDeal(d)}
+                  hiddenCount={hiddenCount}
+                />
+              );
+            })}
           </DndContext>
         </div>
       </div>
 
       <DealFormModal isOpen={isDealModalOpen} onClose={() => setIsDealModalOpen(false)} onSuccess={fetchDeals} />
+      <EditDealModal isOpen={!!editingDeal} deal={editingDeal} onClose={() => setEditingDeal(null)} onSuccess={fetchDeals} />
       
       {pendingMove && (
-        <NextActionModal 
-          isOpen={true}
-          dealId={pendingMove.dealId}
-          contactId={pendingMove.contactId}
-          newStage={pendingMove.newStage}
-          onCancel={handleCancelMove}
-          onSuccess={handleConfirmMove}
-        />
+        <NextActionModal isOpen={true} dealId={pendingMove.dealId} contactId={pendingMove.contactId} newStage={pendingMove.newStage} onCancel={handleCancelMove} onSuccess={handleConfirmMove} />
       )}
     </div>
   );
