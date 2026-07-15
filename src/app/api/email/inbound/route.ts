@@ -11,21 +11,33 @@ export async function POST(req: Request) {
   try {
     const payload = await req.json();
 
-    // Resend's inbound webhook shape: { type: 'email.received', data: { to: '...', from: '...', subject: '...', text: '...' } }
-    // Note: Some parsers send raw JSON directly. We handle both.
     const emailData = payload.data || payload; 
     const { from, to, subject, text, html } = emailData;
+
+    console.log("[Inbound Webhook] Received email packet:", { from, to, subject });
 
     if (!from || !to) {
       return NextResponse.json({ error: "Missing to/from addresses" }, { status: 400 });
     }
 
-    // 1. Extract the organization slug from the "to" address (e.g. bloomspa@app.pyrexxai.com -> bloomspa)
     const toAddress = Array.isArray(to) ? to[0] : to;
-    const slug = toAddress.split("@")[0].toLowerCase();
+    const localPart = toAddress.split("@")[0].toLowerCase();
+
+    // 1. Resolve Organization Slug
+    // If the address is peter.pyrexxai@..., the local-part is "peter.pyrexxai".
+    // We split by the dot to extract the actual organization slug: "pyrexxai".
+    let slug = localPart;
+    if (localPart.includes(".")) {
+      slug = localPart.split(".")[1]; // "peter.pyrexxai" -> "pyrexxai"
+    }
+
+    console.log("[Inbound Webhook] Resolving organization via slug:", { localPart, resolvedSlug: slug });
 
     const { data: org } = await supabase.from("organizations").select("id").eq("slug", slug).single();
-    if (!org) return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
+    if (!org) {
+      console.error("[Inbound Webhook] Organization slug lookup failed:", { slug });
+      return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
+    }
 
     // 2. Extract sender email and find Contact (Create if it's a new inbound inquiry)
     const senderEmailMatch = from.match(/<(.+)>/);
@@ -42,10 +54,10 @@ export async function POST(req: Request) {
     if (existingContact) {
       contactId = existingContact.id;
     } else {
-      // Auto-create lead for inbound email
+      console.log("[Inbound Webhook] Contact not found, auto-creating lead...", { senderEmail });
       const { data: newContact } = await supabase.from("contacts").insert({
         org_id: org.id,
-        first_name: senderEmail.split("@")[0], // Fallback name
+        first_name: senderEmail.split("@")[0], 
         last_name: "Inquiry",
         email: senderEmail,
         type: "lead",
@@ -67,6 +79,7 @@ export async function POST(req: Request) {
     if (existingThread) {
       threadId = existingThread.id;
     } else {
+      console.log("[Inbound Webhook] Active conversation thread not found, provisioning...");
       const { data: newThread } = await supabase.from("threads").insert({
         org_id: org.id,
         contact_id: contactId,
@@ -77,15 +90,21 @@ export async function POST(req: Request) {
     }
 
     // 4. Insert the Message (Our Postgres trigger will auto-update the thread timestamp and unread status)
-    await supabase.from("messages").insert({
+    const { error: insertError } = await supabase.from("messages").insert({
       thread_id: threadId,
       direction: "inbound",
       content: text || html || "Empty Message content"
     });
 
+    if (insertError) {
+      console.error("[Inbound Webhook] Failed to write message to database:", insertError);
+      return NextResponse.json({ error: "Failed to log message." }, { status: 500 });
+    }
+
+    console.log("[Inbound Webhook] Message logged successfully. Realtime listeners updated.");
     return NextResponse.json({ success: true });
   } catch (error: any) {
-    console.error("Inbound Webhook Error:", error);
+    console.error("[Inbound Webhook Critical Exception]:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

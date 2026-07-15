@@ -1,19 +1,23 @@
 import { Resend } from 'resend';
 import { EmailProvider, SendEmailPayload } from './EmailProvider';
 
-// Safely evaluate API key to prevent SDK initialization crash on Vercel
-const apiKey = process.env.RESEND_API_KEY;
-const resend = apiKey ? new Resend(apiKey) : null;
-
 export class ResendProvider implements EmailProvider {
+  private resend: Resend | null = null;
+
+  constructor(customApiKey?: string) {
+    // Fall back to global environment key if no custom tenant key is provided
+    const apiKey = customApiKey || process.env.RESEND_API_KEY;
+    this.resend = apiKey ? new Resend(apiKey) : null;
+  }
+
   async sendEmail(payload: SendEmailPayload) {
-    if (!resend) {
-      console.error("[Email Engine Error]: RESEND_API_KEY is not defined in environment variables.");
-      return { error: "RESEND_API_KEY is missing from server environment." };
+    if (!this.resend) {
+      console.error("[Email Engine Error]: No valid Resend API key configured for this client.");
+      return { error: "Resend API key is missing or unconfigured." };
     }
 
     try {
-      const data = await resend.emails.send({
+      const data = await this.resend.emails.send({
         from: payload.from,
         to: payload.to,
         subject: payload.subject,
@@ -28,7 +32,7 @@ export class ResendProvider implements EmailProvider {
       }
       return { id: data.data?.id };
     } catch (error: any) {
-      console.error("[Resend Server Crash Exception]:", error);
+      console.error("[Resend Server Exception]:", error);
       return { error: error.message };
     }
   }
