@@ -10,7 +10,8 @@ import { useAppStore } from "@/store/useAppStore";
 
 export default function ProfileSettingsPage() {
   const supabase = createClient();
-  const { userId } = useAppStore();
+  // Destructure setUserName from our newly updated store
+  const { userId, userName, userEmail, setUserName } = useAppStore();
   
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -19,15 +20,10 @@ export default function ProfileSettingsPage() {
   const [isSavingAuth, setIsSavingAuth] = useState(false);
 
   useEffect(() => {
-    if (userId) {
-      supabase.from("users").select("full_name, email").eq("id", userId).single().then(({ data }) => {
-        if (data) {
-          setFullName(data.full_name || "");
-          setEmail(data.email || "");
-        }
-      });
-    }
-  }, [userId, supabase]);
+    // Populate form with global state data on load
+    if (userName) setFullName(userName);
+    if (userEmail) setEmail(userEmail);
+  }, [userName, userEmail]);
 
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,17 +33,21 @@ export default function ProfileSettingsPage() {
     const { error } = await supabase.from("users").update({ full_name: fullName }).eq("id", userId);
     
     setIsSavingProfile(false);
-    if (error) toast.error("Failed to update profile.");
-    else toast.success("Profile updated successfully.");
+    if (error) {
+      toast.error("Failed to update profile.");
+    } else {
+      toast.success("Profile updated successfully.");
+      // Instantly update the sidebar/topbar UI!
+      setUserName(fullName);
+    }
   };
 
   const handleUpdateSecurity = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSavingAuth(true);
 
-    // Update Email and/or Password in Supabase Auth
     const updates: any = {};
-    if (email) updates.email = email;
+    if (email !== userEmail) updates.email = email;
     if (password) updates.password = password;
 
     const { error } = await supabase.auth.updateUser(updates);
@@ -56,18 +56,17 @@ export default function ProfileSettingsPage() {
     if (error) {
       toast.error("Security update failed", { description: error.message });
     } else {
-      toast.success("Security credentials updated!");
-      setPassword(""); // Clear password field for safety
+      toast.success("Security credentials updated! Please verify your new email if changed.");
+      setPassword("");
     }
   };
 
   return (
     <AppLayout>
-      <div className="p-4 md:p-8 max-w-3xl mx-auto flex-1">
+      <div className="p-4 md:p-8 max-w-3xl mx-auto flex-1 w-full">
         <SectionTitle eyebrow="Settings" title="Personal Profile" />
 
         <div className="space-y-6 mt-6">
-          {/* Public Profile Form */}
           <div className="rounded-xl p-6 border border-line bg-white shadow-card">
             <h2 className="text-lg font-medium text-ink font-body mb-4">Public Information</h2>
             <form onSubmit={handleUpdateProfile} className="space-y-4 max-w-md">
@@ -82,7 +81,6 @@ export default function ProfileSettingsPage() {
             </form>
           </div>
 
-          {/* Security Credentials Form */}
           <div className="rounded-xl p-6 border border-line bg-white shadow-card">
             <h2 className="text-lg font-medium text-ink font-body mb-4">Security & Authentication</h2>
             <p className="text-xs text-slate font-body mb-4 max-w-md">

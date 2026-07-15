@@ -14,6 +14,8 @@ interface AppState {
   activeOrgId: string | null;
   userRole: string | null;
   userId: string | null;
+  userName: string | null;
+  userEmail: string | null;
   workspaces: Workspace[];
   mobileMenuOpen: boolean;
   commandPaletteOpen: boolean;
@@ -21,6 +23,8 @@ interface AppState {
   setWorkspace: (ws: WorkspaceType) => void;
   setActiveOrgId: (id: string | null) => void;
   setUser: (id: string | null, role: string | null) => void;
+  setUserName: (name: string | null) => void;
+  setUserEmail: (email: string | null) => void;
   setWorkspaces: (workspaces: Workspace[]) => void;
   setMobileMenuOpen: (open: boolean) => void;
   setCommandPaletteOpen: (open: boolean) => void;
@@ -33,6 +37,8 @@ export const useAppStore = create<AppState>()(
       activeOrgId: null,
       userRole: null,
       userId: null,
+      userName: null,
+      userEmail: null,
       workspaces: [],
       mobileMenuOpen: false,
       commandPaletteOpen: false,
@@ -40,6 +46,8 @@ export const useAppStore = create<AppState>()(
       setWorkspace: (ws) => set({ currentWorkspace: ws }),
       setActiveOrgId: (id) => set({ activeOrgId: id }),
       setUser: (id, role) => set({ userId: id, userRole: role }),
+      setUserName: (name) => set({ userName: name }),
+      setUserEmail: (email) => set({ userEmail: email }),
       setWorkspaces: (workspaces) => set({ workspaces }),
       setMobileMenuOpen: (open) => set({ mobileMenuOpen: open }),
       setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
@@ -50,10 +58,10 @@ export const useAppStore = create<AppState>()(
         currentWorkspace: state.currentWorkspace,
         activeOrgId: state.activeOrgId,
         userRole: state.userRole,
-        userId: state.userId
+        userId: state.userId,
+        userName: state.userName,
+        userEmail: state.userEmail
       }), 
-      // Note: We do NOT persist the `workspaces` array. 
-      // We want to fetch it fresh on every load so if access is revoked, it updates instantly.
     }
   )
 );

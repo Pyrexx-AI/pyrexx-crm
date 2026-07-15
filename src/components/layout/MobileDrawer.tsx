@@ -146,10 +146,10 @@ export function MobileDrawer() {
       </div>
 
       <div className="p-4 flex items-center gap-2.5 border-t border-inkSoft pb-safe">
-        <Avatar name="Pyrexx Admin" size={30} />
-        <div className="text-xs font-body">
-          <div className="text-paper">Pyrexx Admin</div>
-          <div className="text-slate">Active Session</div>
+        <Avatar name={useAppStore(s => s.userName) || "User"} size={30} />
+        <div className="text-xs font-body truncate">
+          <div className="text-paper truncate">{useAppStore(s => s.userName) || "Pyrexx User"}</div>
+          <div className="text-slate capitalize">{useAppStore(s => s.userRole) || "Role"}</div>
         </div>
       </div>
     </div>

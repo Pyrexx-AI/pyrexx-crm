@@ -53,6 +53,7 @@ src/app/api/email/inbound/route.ts
 src/app/api/email/send/route.ts
 src/app/api/team/invite/route.ts
 src/app/auth/login/page.tsx
+src/app/auth/update-password/page.tsx
 src/app/calls/page.tsx
 src/app/contacts/[id]/page.tsx
 src/app/contacts/page.tsx
@@ -64,6 +65,7 @@ src/app/page.tsx
 src/app/pipeline/page.tsx
 src/app/reports/page.tsx
 src/app/settings/integrations/page.tsx
+src/app/settings/profile/page.tsx
 src/app/settings/team/page.tsx
 src/app/tasks/page.tsx
 src/components/features/accounts/AccountFormModal.tsx
@@ -72,6 +74,7 @@ src/components/features/contacts/ContactsTable.tsx
 src/components/features/contacts/CsvImportModal.tsx
 src/components/features/inbox/InboxThread.tsx
 src/components/features/pipeline/DealFormModal.tsx
+src/components/features/pipeline/EditDealModal.tsx
 src/components/features/pipeline/NextActionModal.tsx
 src/components/features/pipeline/PipelineBoard.tsx
 src/components/features/pipeline/PipelineCard.tsx
@@ -506,53 +509,6 @@ export async function POST(req: Request) {
 }
 </file>
 
-<file path="src/app/api/team/invite/route.ts">
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-export async function POST(req: Request) {
-  try {
-    const { email, role, org_id } = await req.json();
-
-    if (!email || !role || !org_id) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
-    }
-
-    // 1. Send the Invite via Supabase Admin API
-    const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(email);
-
-    if (inviteError) {
-      return NextResponse.json({ error: inviteError.message }, { status: 400 });
-    }
-
-    const userId = inviteData.user.id;
-
-    // 2. Ensure they exist in public.users (Just in case the trigger lagged)
-    await supabaseAdmin.from('users').upsert({ id: userId, email: email, full_name: email.split('@')[0] });
-
-    // 3. Assign them to the organization in memberships
-    const { error: membershipError } = await supabaseAdmin.from('memberships').insert({
-      user_id: userId,
-      org_id: org_id,
-      role: role
-    });
-
-    if (membershipError) {
-      return NextResponse.json({ error: membershipError.message }, { status: 500 });
-    }
-
-    return NextResponse.json({ success: true, user: inviteData.user });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
-}
-</file>
-
 <file path="src/app/auth/login/page.tsx">
 "use client";
 import React, { useState } from "react";
@@ -614,6 +570,89 @@ export default function LoginPage() {
           />
           <Button type="submit" className="w-full mt-2" disabled={isLoading}>
             {isLoading ? "Authenticating..." : "Sign In"}
+          </Button>
+        </form>
+      </div>
+      <Toaster position="top-center" richColors />
+    </div>
+  );
+}
+</file>
+
+<file path="src/app/auth/update-password/page.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { PulseTrace } from "@/components/ui/PulseTrace";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { createClient } from "@/lib/supabase";
+import { useRouter } from "next/navigation";
+import { toast, Toaster } from "sonner";
+
+export default function UpdatePasswordPage() {
+  const supabase = createClient();
+  const router = useRouter();
+  const [password, setPassword] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(true);
+
+  // When a user clicks an invite link, Supabase sets the session via URL hash. 
+  // We wait to ensure they are actually authenticated before letting them set a password.
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) {
+        toast.error("Invalid or expired invite link. Redirecting...");
+        setTimeout(() => router.push('/auth/login'), 2000);
+      } else {
+        setIsVerifying(false);
+      }
+    });
+  }, [router, supabase]);
+
+  const handleUpdate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password.length < 6) {
+      toast.error("Password must be at least 6 characters.");
+      return;
+    }
+
+    setIsLoading(true);
+    const { error } = await supabase.auth.updateUser({ password });
+
+    if (error) {
+      toast.error("Failed to update password", { description: error.message });
+      setIsLoading(false);
+    } else {
+      toast.success("Password secured! Welcome to Pyrexx.");
+      setTimeout(() => router.push("/"), 1500);
+    }
+  };
+
+  if (isVerifying) {
+    return <div className="min-h-screen flex items-center justify-center bg-paperDim"><PulseTrace sentiment="neutral" size="lg" /></div>;
+  }
+
+  return (
+    <div className="min-h-screen w-full flex items-center justify-center bg-paperDim p-4">
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-line p-8">
+        <div className="flex flex-col items-center mb-8">
+          <PulseTrace sentiment="positive" size="lg" />
+          <h1 className="font-display text-2xl text-ink mt-4 text-center">Secure Your Account</h1>
+          <p className="text-sm text-slate font-body mt-1 text-center">Please set a permanent password for your Pyrexx CRM account.</p>
+        </div>
+
+        <form onSubmit={handleUpdate} className="space-y-4">
+          <Input 
+            label="New Password" 
+            type="password" 
+            placeholder="At least 6 characters"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            autoFocus
+          />
+          <Button type="submit" className="w-full mt-2" disabled={isLoading}>
+            {isLoading ? "Securing..." : "Save Password & Enter"}
           </Button>
         </form>
       </div>
@@ -953,151 +992,117 @@ export default function IntegrationsPage() {
 }
 </file>
 
-<file path="src/app/settings/team/page.tsx">
+<file path="src/app/settings/profile/page.tsx">
 "use client";
 import React, { useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionTitle } from "@/components/ui/SectionTitle";
-import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { Avatar } from "@/components/ui/Avatar";
-import { Badge } from "@/components/ui/Badge";
-import { UserPlus } from "lucide-react";
+import { Button } from "@/components/ui/Button";
 import { createClient } from "@/lib/supabase";
-import { useAppStore } from "@/store/useAppStore";
 import { toast, Toaster } from "sonner";
-import { Modal } from "@/components/ui/Modal";
+import { useAppStore } from "@/store/useAppStore";
 
-export default function TeamSettingsPage() {
+export default function ProfileSettingsPage() {
   const supabase = createClient();
-  const { activeOrgId, userRole } = useAppStore();
+  const { userId } = useAppStore();
   
-  const [members, setMembers] = useState<any[]>([]);
-  const [isInviteOpen, setIsInviteOpen] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState("rep");
-  const [isInviting, setIsInviting] = useState(false);
-
-  const fetchTeam = async () => {
-    if (!activeOrgId) return;
-    const { data } = await supabase
-      .from("memberships")
-      .select("role, created_at, users(id, full_name, email)")
-      .eq("org_id", activeOrgId)
-      .order("created_at", { ascending: true });
-
-    if (data) setMembers(data);
-  };
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isSavingAuth, setIsSavingAuth] = useState(false);
 
   useEffect(() => {
-    fetchTeam();
-  }, [activeOrgId]);
+    if (userId) {
+      supabase.from("users").select("full_name, email").eq("id", userId).single().then(({ data }) => {
+        if (data) {
+          setFullName(data.full_name || "");
+          setEmail(data.email || "");
+        }
+      });
+    }
+  }, [userId, supabase]);
 
-  const handleInvite = async (e: React.FormEvent) => {
+  const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inviteEmail || !activeOrgId) return;
+    if (!userId) return;
+    setIsSavingProfile(true);
+
+    const { error } = await supabase.from("users").update({ full_name: fullName }).eq("id", userId);
     
-    setIsInviting(true);
-    const res = await fetch("/api/team/invite", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: inviteEmail, role: inviteRole, org_id: activeOrgId })
-    });
+    setIsSavingProfile(false);
+    if (error) toast.error("Failed to update profile.");
+    else toast.success("Profile updated successfully.");
+  };
 
-    const data = await res.json();
-    setIsInviting(false);
+  const handleUpdateSecurity = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingAuth(true);
 
-    if (res.ok) {
-      toast.success("Invite sent successfully!");
-      setIsInviteOpen(false);
-      setInviteEmail("");
-      fetchTeam();
+    // Update Email and/or Password in Supabase Auth
+    const updates: any = {};
+    if (email) updates.email = email;
+    if (password) updates.password = password;
+
+    const { error } = await supabase.auth.updateUser(updates);
+
+    setIsSavingAuth(false);
+    if (error) {
+      toast.error("Security update failed", { description: error.message });
     } else {
-      toast.error(data.error || "Failed to invite user");
+      toast.success("Security credentials updated!");
+      setPassword(""); // Clear password field for safety
     }
   };
 
   return (
     <AppLayout>
-      <div className="p-4 md:p-8 max-w-5xl mx-auto flex-1">
-        <SectionTitle 
-          eyebrow="Settings"
-          title="Team Management" 
-          action={
-            userRole === 'owner' || userRole === 'manager' ? (
-              <Button icon={UserPlus} onClick={() => setIsInviteOpen(true)}>Invite Member</Button>
-            ) : null
-          }
-        />
+      <div className="p-4 md:p-8 max-w-3xl mx-auto flex-1">
+        <SectionTitle eyebrow="Settings" title="Personal Profile" />
 
-        <div className="rounded-xl overflow-hidden border border-line bg-white shadow-card">
-          <table className="w-full text-sm font-body">
-            <thead className="bg-paperDim border-b border-line">
-              <tr>
-                {["Team Member", "Role", "Joined", ""].map((h) => (
-                  <th key={h} className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em]">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {members.map((m) => (
-                <tr key={m.users?.id} className="border-b border-line hover:bg-paperDim/50 transition-colors">
-                  <td className="px-5 py-3">
-                    <div className="flex items-center gap-3">
-                      <Avatar name={m.users?.full_name || "Unknown"} size={32} />
-                      <div>
-                        <div className="font-medium text-ink">{m.users?.full_name}</div>
-                        <div className="text-xs text-slate font-mono">{m.users?.email}</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-5 py-3">
-                    <Badge variant={m.role === 'owner' ? 'sage' : m.role === 'manager' ? 'amber' : 'slate'}>
-                      {m.role.toUpperCase()}
-                    </Badge>
-                  </td>
-                  <td className="px-5 py-3 text-slate">
-                    {new Date(m.created_at).toLocaleDateString()}
-                  </td>
-                  <td className="px-5 py-3 text-right">
-                    {/* Management actions (Remove, Edit Role) go here in future */}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <Modal isOpen={isInviteOpen} onClose={() => setIsInviteOpen(false)} title="Invite Team Member">
-          <form onSubmit={handleInvite} className="space-y-4">
-            <Input 
-              label="Email Address" 
-              type="email" 
-              placeholder="name@pyrexxai.com" 
-              value={inviteEmail}
-              onChange={(e) => setInviteEmail(e.target.value)}
-              required
-            />
-            <div className="w-full flex flex-col gap-1.5 mb-3">
-              <label className="text-xs text-slate font-body font-medium">Role</label>
-              <select 
-                value={inviteRole}
-                onChange={(e) => setInviteRole(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg text-sm outline-none bg-paperDim font-body text-ink border border-transparent focus:border-berry transition-all"
-              >
-                <option value="rep">Sales Rep (Restricted View)</option>
-                <option value="manager">Manager (Global View)</option>
-                <option value="owner">Owner (Admin Access)</option>
-              </select>
-            </div>
-            <div className="flex justify-end gap-3 pt-4 border-t border-line">
-              <Button type="button" variant="ghost" onClick={() => setIsInviteOpen(false)}>Cancel</Button>
-              <Button type="submit" disabled={isInviting}>
-                {isInviting ? "Sending Invite..." : "Send Invite"}
+        <div className="space-y-6 mt-6">
+          {/* Public Profile Form */}
+          <div className="rounded-xl p-6 border border-line bg-white shadow-card">
+            <h2 className="text-lg font-medium text-ink font-body mb-4">Public Information</h2>
+            <form onSubmit={handleUpdateProfile} className="space-y-4 max-w-md">
+              <Input 
+                label="Full Name" 
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+              />
+              <Button type="submit" disabled={isSavingProfile}>
+                {isSavingProfile ? "Saving..." : "Save Profile"}
               </Button>
-            </div>
-          </form>
-        </Modal>
+            </form>
+          </div>
+
+          {/* Security Credentials Form */}
+          <div className="rounded-xl p-6 border border-line bg-white shadow-card">
+            <h2 className="text-lg font-medium text-ink font-body mb-4">Security & Authentication</h2>
+            <p className="text-xs text-slate font-body mb-4 max-w-md">
+              Updating your email will require you to verify the new address. Updating your password will log out all other active sessions.
+            </p>
+            <form onSubmit={handleUpdateSecurity} className="space-y-4 max-w-md">
+              <Input 
+                label="Login Email" 
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+              <Input 
+                label="New Password" 
+                type="password"
+                placeholder="Leave blank to keep current password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <Button type="submit" disabled={isSavingAuth} variant="outline">
+                {isSavingAuth ? "Securing..." : "Update Security Credentials"}
+              </Button>
+            </form>
+          </div>
+        </div>
       </div>
       <Toaster position="top-right" richColors />
     </AppLayout>
@@ -1543,120 +1548,118 @@ export function DealFormModal({ isOpen, onClose, onSuccess }: { isOpen: boolean;
 }
 </file>
 
-<file path="src/components/features/pipeline/PipelineCard.tsx">
+<file path="src/components/features/pipeline/EditDealModal.tsx">
 "use client";
-import React from "react";
-import { useDraggable } from "@dnd-kit/core";
-import { Avatar } from "@/components/ui/Avatar";
-import { Badge } from "@/components/ui/Badge";
-import { CSS } from "@dnd-kit/utilities";
+import React, { useState, useEffect } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
+import { Modal } from "@/components/ui/Modal";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { createClient } from "@/lib/supabase";
+import { toast } from "sonner";
+import { Trash2 } from "lucide-react";
+import { useAppStore } from "@/store/useAppStore";
 
-interface PipelineCardProps {
-  deal: {
-    id: string;
-    name: string;
-    value: number;
-    stage: string; // <-- Added to fix the build error
-    next_action: string | null; // <-- Made nullable for DB safety
-    is_overdue: boolean;
-    contacts: { first_name: string; last_name: string } | null;
-  };
+const editDealSchema = z.object({
+  name: z.string().min(1, "Deal name is required"),
+  value: z.coerce.number().min(0, "Value cannot be negative"),
+  next_action: z.string().optional(),
+});
+
+type EditDealValues = z.infer<typeof editDealSchema>;
+
+interface EditDealModalProps {
+  isOpen: boolean;
+  deal: any;
+  onClose: () => void;
+  onSuccess: () => void;
 }
 
-export function PipelineCard({ deal }: PipelineCardProps) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
-    id: deal.id,
-    data: { stage: deal.stage, deal },
+export function EditDealModal({ isOpen, deal, onClose, onSuccess }: EditDealModalProps) {
+  const supabase = createClient();
+  const { userRole } = useAppStore();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const { register, handleSubmit, formState: { errors }, reset } = useForm<EditDealValues>({
+    resolver: zodResolver(editDealSchema),
   });
 
-  const style = {
-    transform: CSS.Translate.toString(transform),
-    opacity: isDragging ? 0.5 : 1,
-    zIndex: isDragging ? 999 : "auto",
+  useEffect(() => {
+    if (deal) {
+      reset({
+        name: deal.name,
+        value: deal.value,
+        next_action: deal.next_action || ""
+      });
+    }
+  }, [deal, reset]);
+
+  const onSubmit = async (data: EditDealValues) => {
+    if (!deal) return;
+    setIsSubmitting(true);
+    
+    const { error } = await supabase.from("deals").update({
+      name: data.name,
+      value: data.value,
+      next_action: data.next_action,
+      updated_at: new Date().toISOString()
+    }).eq("id", deal.id);
+
+    setIsSubmitting(false);
+
+    if (error) {
+      toast.error("Failed to update deal");
+    } else {
+      toast.success("Deal updated!");
+      onSuccess();
+      onClose();
+    }
   };
 
-  const contactName = deal.contacts ? `${deal.contacts.first_name} ${deal.contacts.last_name}` : "Unknown";
+  const handleDelete = async () => {
+    if (!window.confirm("Are you sure you want to delete this deal? This action cannot be undone.")) return;
+    setIsDeleting(true);
+    
+    const { error } = await supabase.from("deals").delete().eq("id", deal.id);
+    setIsDeleting(false);
 
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      {...attributes}
-      {...listeners}
-      className="rounded-lg p-3 cursor-grab active:cursor-grabbing bg-white border border-line shadow-sm hover:shadow-md transition-shadow relative"
-    >
-      <div className="flex items-center gap-2 mb-2">
-        <Avatar name={contactName} size={22} />
-        <span className="text-sm text-ink font-body font-medium truncate">{deal.name}</span>
-      </div>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-sm text-ink font-mono font-medium">
-          ${Number(deal.value).toLocaleString()}
-        </span>
-        {deal.is_overdue && <Badge variant="berry">Overdue</Badge>}
-      </div>
-      {deal.next_action && (
-        <div className="text-xs text-slate font-body mt-2 truncate">
-          <span className="font-medium">Next:</span> {deal.next_action}
-        </div>
-      )}
-    </div>
-  );
-}
-</file>
-
-<file path="src/components/features/pipeline/PipelineColumn.tsx">
-"use client";
-import React from "react";
-import { useDroppable } from "@dnd-kit/core";
-import { PipelineCard } from "./PipelineCard";
-
-interface PipelineColumnProps {
-  stage: string;
-  deals: any[];
-}
-
-export function PipelineColumn({ stage, deals }: PipelineColumnProps) {
-  const { setNodeRef, isOver } = useDroppable({
-    id: stage, // The ID of the droppable area is the exact stage name
-  });
-
-  const stageColorMap: Record<string, string> = {
-    "New Lead": "#6B6E77",       // slate
-    "Demo Scheduled": "#D69A32", // amber
-    "Proposal Sent": "#D69A32",  // amber
-    "Contract Sent": "#AF3358",  // berry
-    "Onboarding": "#AF3358",     // berry
-    "Active Client": "#4C8A67",  // sage
+    if (error) {
+      toast.error("Failed to delete deal");
+    } else {
+      toast.success("Deal deleted.");
+      onSuccess();
+      onClose();
+    }
   };
 
-  const stageColor = stageColorMap[stage] || "#6B6E77";
-  const stageValue = deals.reduce((sum, d) => sum + Number(d.value), 0);
+  if (!deal) return null;
 
   return (
-    <div className="w-[85vw] sm:w-[280px] flex-shrink-0 snap-start flex flex-col h-full max-h-full">
-      <div 
-        className="pt-2 pb-3 px-1 mb-2 sticky top-0 bg-paper z-10" 
-        style={{ borderTop: `3px solid ${stageColor}` }}
-      >
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-sm font-medium text-ink font-body uppercase tracking-[0.05em]">{stage}</span>
-          <span className="text-xs text-slate font-mono bg-paperDim px-1.5 py-0.5 rounded">{deals.length}</span>
+    <Modal isOpen={isOpen} onClose={onClose} title="Edit Deal">
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <Input label="Deal Name" {...register("name")} error={errors.name?.message} />
+        <Input label="Pipeline Value ($)" type="number" step="0.01" {...register("value")} error={errors.value?.message} />
+        <Input label="Next Action" {...register("next_action")} error={errors.next_action?.message} />
+        
+        <div className="flex justify-between items-center pt-4 border-t border-line mt-4">
+          {(userRole === 'owner' || userRole === 'manager') ? (
+            <button type="button" onClick={handleDelete} disabled={isDeleting} className="text-berry text-sm flex items-center gap-1 hover:underline">
+              <Trash2 size={16} /> Delete Deal
+            </button>
+          ) : <div />}
+          
+          <div className="flex gap-3">
+            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={isSubmitting}>
+              {isSubmitting ? "Saving..." : "Save Changes"}
+            </Button>
+          </div>
         </div>
-        <div className="text-xs text-slate font-mono">${stageValue.toLocaleString()}</div>
-      </div>
-      
-      <div 
-        ref={setNodeRef} 
-        className={`space-y-3 min-h-[150px] p-1.5 rounded-lg transition-colors flex-1 overflow-y-auto pb-6 ${
-          isOver ? "bg-paperDim/80 border border-dashed border-slate/50" : "bg-transparent border border-transparent"
-        }`}
-      >
-        {deals.map(deal => (
-          <PipelineCard key={deal.id} deal={deal} />
-        ))}
-      </div>
-    </div>
+      </form>
+    </Modal>
   );
 }
 </file>
@@ -1718,135 +1721,6 @@ export function MobileTabBar() {
       </button>
     </div>
   );
-}
-</file>
-
-<file path="src/components/layout/Topbar.tsx">
-"use client";
-import React from "react";
-import { useAppStore } from "@/store/useAppStore";
-import { Menu, Search, Bell } from "lucide-react";
-import { Avatar } from "@/components/ui/Avatar";
-import { usePathname } from "next/navigation";
-
-export function Topbar() {
-  const { setMobileMenuOpen } = useAppStore();
-  const pathname = usePathname();
-  
-  // Quick title mapping for MVP
-  const getTitle = () => {
-    const path = pathname.split('/')[1] || 'dashboard';
-    return path.charAt(0).toUpperCase() + path.slice(1);
-  };
-
-  return (
-    <div className="flex items-center justify-between px-4 md:px-8 py-4 border-b border-line bg-paper">
-      <div className="flex items-center gap-3">
-        <button onClick={() => setMobileMenuOpen(true)} className="md:hidden text-ink">
-          <Menu size={20} />
-        </button>
-        <div className="text-sm text-slate font-body font-medium">
-          {getTitle()}
-        </div>
-      </div>
-      
-      <div className="flex items-center gap-3 md:gap-4">
-        <div className="relative hidden sm:block">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate" />
-          <input
-            placeholder="Search contacts, deals..."
-            className="pl-8 pr-3 py-1.5 rounded-lg text-sm w-48 md:w-64 outline-none bg-paperDim font-body text-ink focus:ring-2 focus:ring-berry focus:bg-white transition-all"
-          />
-        </div>
-        <Search size={17} className="sm:hidden text-slate" />
-        <button className="relative">
-          <Bell size={17} className="text-slate hover:text-ink transition-colors" />
-          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-berry border border-paper" />
-        </button>
-        <Avatar name="Pyrexx Gambo" size={28} className="cursor-pointer" />
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="src/components/providers/AuthProvider.tsx">
-"use client";
-import React, { useEffect, useState } from 'react';
-import { createClient } from '@/lib/supabase';
-import { useAppStore } from '@/store/useAppStore';
-import { useRouter } from 'next/navigation';
-
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const supabase = createClient();
-  const router = useRouter();
-  const { activeOrgId, setActiveOrgId, setUser, setWorkspace } = useAppStore();
-  const [isBootstrapping, setIsBootstrapping] = useState(true);
-
-  useEffect(() => {
-    const bootstrap = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      if (!user) {
-        setIsBootstrapping(false);
-        return;
-      }
-
-      // Fetch the user's memberships alongside the parent organization data
-      const { data: memberships } = await supabase
-        .from('memberships')
-        .select('role, org_id, organizations(type)')
-        .eq('user_id', user.id);
-
-      if (memberships && memberships.length > 0) {
-        // Fix: Safely handle Supabase's type inference for foreign key joins
-        // It can infer it as an array or an object depending on schema strictness.
-        const agencyMembership = memberships.find((m: any) => {
-          const org = Array.isArray(m.organizations) ? m.organizations[0] : m.organizations;
-          return org?.type === 'agency';
-        });
-        
-        setUser(user.id, agencyMembership?.role || 'rep');
-
-        // If no active org is persisted, or the persisted org is no longer valid, set a default
-        const validOrgIds = memberships.map(m => m.org_id);
-        if (!activeOrgId || !validOrgIds.includes(activeOrgId)) {
-          if (agencyMembership) {
-            setActiveOrgId(agencyMembership.org_id);
-            setWorkspace('agency');
-          } else {
-            setActiveOrgId(memberships[0].org_id);
-            setWorkspace('clinic');
-          }
-        }
-      }
-
-      setIsBootstrapping(false);
-    };
-
-    bootstrap();
-
-    // Listen for sign outs
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_OUT') {
-        setActiveOrgId(null);
-        setUser(null, null);
-        router.push('/auth/login');
-      }
-    });
-
-    return () => subscription.unsubscribe();
-  }, [supabase, activeOrgId, setActiveOrgId, setUser, setWorkspace, router]);
-
-  if (isBootstrapping) {
-    return (
-      <div className="h-screen w-full flex items-center justify-center bg-paper">
-        <div className="w-6 h-6 border-2 border-berry border-t-transparent rounded-full animate-spin"></div>
-      </div>
-    );
-  }
-
-  return <>{children}</>;
 }
 </file>
 
@@ -1958,182 +1832,6 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 );
 
 Button.displayName = "Button";
-</file>
-
-<file path="src/components/ui/CommandPalette.tsx">
-"use client";
-import React, { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
-import { Search, User, Building2, Columns, X } from "lucide-react";
-import { createClient } from "@/lib/supabase";
-import { useAppStore } from "@/store/useAppStore";
-import { Badge } from "@/components/ui/Badge";
-
-export function CommandPalette() {
-  const [isOpen, setIsOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<{ type: string; id: string; title: string; subtitle: string }[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  
-  const router = useRouter();
-  const supabase = createClient();
-  const { activeOrgId, currentWorkspace } = useAppStore();
-
-  // 1. Listen for Cmd+K or Ctrl+K
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setIsOpen((prev) => !prev);
-      }
-      if (e.key === "Escape") setIsOpen(false);
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
-
-  // 2. Perform Global Search
-  useEffect(() => {
-    if (!query.trim() || !activeOrgId) {
-      setResults([]);
-      return;
-    }
-
-    const searchDb = async () => {
-      setIsLoading(true);
-      const searchQ = query.trim();
-      let combinedResults: any[] = [];
-
-      // A. Search Contacts (using the tsvector built in Phase 1)
-      const { data: contacts } = await supabase
-        .from("contacts")
-        .select("id, first_name, last_name, email")
-        .eq("org_id", activeOrgId)
-        .textSearch("search_vector", searchQ, { type: 'websearch', config: 'english' })
-        .limit(5);
-
-      if (contacts) {
-        combinedResults.push(...contacts.map(c => ({
-          type: "Contact",
-          id: c.id,
-          title: `${c.first_name} ${c.last_name}`,
-          subtitle: c.email || "No email"
-        })));
-      }
-
-      // B. Search Deals (ilike match on name)
-      const { data: deals } = await supabase
-        .from("deals")
-        .select("id, name, stage")
-        .eq("org_id", activeOrgId)
-        .ilike("name", `%${searchQ}%`)
-        .limit(3);
-
-      if (deals) {
-        combinedResults.push(...deals.map(d => ({
-          type: "Deal",
-          id: "pipeline", // Routes to pipeline board for now
-          title: d.name,
-          subtitle: `Stage: ${d.stage}`
-        })));
-      }
-
-      // C. Search Sub-Accounts (Only if Agency Workspace)
-      if (currentWorkspace === "agency") {
-        const { data: orgs } = await supabase
-          .from("organizations")
-          .select("id, name, slug")
-          .eq("type", "clinic")
-          .ilike("name", `%${searchQ}%`)
-          .limit(3);
-
-        if (orgs) {
-          combinedResults.push(...orgs.map(o => ({
-            type: "Account",
-            id: o.id,
-            title: o.name,
-            subtitle: `${o.slug}@app.pyrexxai.com`
-          })));
-        }
-      }
-
-      setResults(combinedResults);
-      setIsLoading(false);
-    };
-
-    const debounceId = setTimeout(searchDb, 300);
-    return () => clearTimeout(debounceId);
-  }, [query, activeOrgId, currentWorkspace, supabase]);
-
-  const handleSelect = (result: any) => {
-    setIsOpen(false);
-    setQuery("");
-    
-    if (result.type === "Contact") router.push(`/contacts/${result.id}`);
-    if (result.type === "Deal") router.push(`/pipeline`);
-    if (result.type === "Account") router.push(`/accounts`);
-  };
-
-  if (!isOpen) return null;
-
-  return (
-    <div className="fixed inset-0 z-[100] flex items-start justify-center pt-24 pb-4 px-4 bg-ink/60 backdrop-blur-sm" onClick={() => setIsOpen(false)}>
-      <div className="w-full max-w-2xl bg-white rounded-xl shadow-2xl overflow-hidden border border-line flex flex-col" onClick={e => e.stopPropagation()}>
-        
-        {/* Search Input */}
-        <div className="flex items-center px-4 border-b border-line bg-paperDim/30">
-          <Search size={18} className="text-slate flex-shrink-0" />
-          <input
-            autoFocus
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search contacts, deals, or accounts..."
-            className="w-full bg-transparent border-none outline-none px-4 py-4 text-ink font-body placeholder:text-slate"
-          />
-          <button onClick={() => setIsOpen(false)} className="p-1 text-slate hover:text-ink transition-colors rounded">
-            <X size={16} />
-          </button>
-        </div>
-
-        {/* Results */}
-        <div className="max-h-[60vh] overflow-y-auto p-2">
-          {query.trim() === "" ? (
-            <div className="p-8 text-center text-sm text-slate font-body">
-              Start typing to search globally...
-            </div>
-          ) : results.length > 0 ? (
-            <div className="space-y-1">
-              {results.map((r, i) => (
-                <button
-                  key={`${r.type}-${r.id}-${i}`}
-                  onClick={() => handleSelect(r)}
-                  className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-paperDim transition-colors text-left group"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-white border border-line flex items-center justify-center text-slate group-hover:text-berry group-hover:border-berrySoft transition-colors">
-                      {r.type === "Contact" && <User size={14} />}
-                      {r.type === "Deal" && <Columns size={14} />}
-                      {r.type === "Account" && <Building2 size={14} />}
-                    </div>
-                    <div>
-                      <div className="text-sm font-medium text-ink font-body">{r.title}</div>
-                      <div className="text-xs text-slate font-body">{r.subtitle}</div>
-                    </div>
-                  </div>
-                  <Badge variant="slate" className="opacity-60 group-hover:opacity-100">{r.type}</Badge>
-                </button>
-              ))}
-            </div>
-          ) : isLoading ? (
-             <div className="p-8 text-center text-sm text-slate font-body">Searching...</div>
-          ) : (
-             <div className="p-8 text-center text-sm text-slate font-body">No results found for "{query}"</div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
 </file>
 
 <file path="src/components/ui/Input.tsx">
@@ -2455,55 +2153,6 @@ export function cn(...inputs: ClassValue[]) {
 }
 </file>
 
-<file path="src/middleware.ts">
-import { createServerClient, type CookieOptions } from '@supabase/ssr'
-import { NextResponse, type NextRequest } from 'next/server'
-
-export async function middleware(request: NextRequest) {
-  let response = NextResponse.next({ request: { headers: request.headers } })
-
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        get(name: string) { return request.cookies.get(name)?.value },
-        set(name: string, value: string, options: CookieOptions) {
-          request.cookies.set({ name, value, ...options })
-          response = NextResponse.next({ request: { headers: request.headers } })
-          response.cookies.set({ name, value, ...options })
-        },
-        remove(name: string, options: CookieOptions) {
-          request.cookies.set({ name, value: '', ...options })
-          response = NextResponse.next({ request: { headers: request.headers } })
-          response.cookies.set({ name, value: '', ...options })
-        },
-      },
-    }
-  )
-
-  const { data: { user } } = await supabase.auth.getUser()
-
-  // Protect all routes except auth routes and API webhooks
-  const isAuthRoute = request.nextUrl.pathname.startsWith('/auth')
-  const isApiRoute = request.nextUrl.pathname.startsWith('/api')
-
-  if (!user && !isAuthRoute && !isApiRoute) {
-    return NextResponse.redirect(new URL('/auth/login', request.url))
-  }
-
-  if (user && isAuthRoute) {
-    return NextResponse.redirect(new URL('/', request.url))
-  }
-
-  return response
-}
-
-export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
-}
-</file>
-
 <file path="tsconfig.json">
 {
   "compilerOptions": {
@@ -2670,6 +2319,58 @@ export async function POST(req: Request) {
 }
 </file>
 
+<file path="src/app/api/team/invite/route.ts">
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export async function POST(req: Request) {
+  try {
+    const { email, role, org_id } = await req.json();
+
+    if (!email || !role || !org_id) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    }
+
+    // 1. Send the Invite via Supabase Admin API
+    const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(email);
+
+    if (inviteError) {
+      return NextResponse.json({ error: inviteError.message }, { status: 400 });
+    }
+
+    // FIX: Safely unwrap the user ID to prevent strict null-check build failures
+    const userId = inviteData?.user?.id;
+    
+    if (!userId) {
+      return NextResponse.json({ error: "Failed to resolve user ID from invite response." }, { status: 500 });
+    }
+
+    // 2. Ensure they exist in public.users
+    await supabaseAdmin.from('users').upsert({ id: userId, email: email, full_name: email.split('@')[0] });
+
+    // 3. Assign them to the organization in memberships
+    const { error: membershipError } = await supabaseAdmin.from('memberships').insert({
+      user_id: userId,
+      org_id: org_id,
+      role: role
+    });
+
+    if (membershipError) {
+      return NextResponse.json({ error: membershipError.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true, user: inviteData.user });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+</file>
+
 <file path="src/app/calls/page.tsx">
 "use client";
 import React, { useState } from "react";
@@ -2753,269 +2454,6 @@ export default function CallsPage() {
           })}
         </div>
       </div>
-    </AppLayout>
-  );
-}
-</file>
-
-<file path="src/app/contacts/[id]/page.tsx">
-"use client";
-import React, { useState, useEffect } from "react";
-import { AppLayout } from "@/components/layout/AppLayout";
-import { Avatar } from "@/components/ui/Avatar";
-import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { ChevronLeft, Mail, Phone, Building2, CheckCircle2, Circle, Edit3 } from "lucide-react";
-import { createClient } from "@/lib/supabase";
-import { useParams, useRouter } from "next/navigation";
-import { useAppStore } from "@/store/useAppStore";
-import { toast, Toaster } from "sonner";
-
-export default function ContactDetailPage() {
-  const { id } = useParams();
-  const router = useRouter();
-  const supabase = createClient();
-  const { activeOrgId, userId } = useAppStore();
-  
-  const [contact, setContact] = useState<any>(null);
-  const [tasks, setTasks] = useState<any[]>([]);
-  const [timeline, setTimeline] = useState<any[]>([]);
-  const [noteContent, setNoteContent] = useState("");
-  const [isSavingNote, setIsSavingNote] = useState(false);
-
-  useEffect(() => {
-    if (activeOrgId && id) {
-      fetchData();
-    }
-  }, [activeOrgId, id]);
-
-  const fetchData = async () => {
-    // 1. Fetch Contact Details & associated Deal value
-    const { data: contactData } = await supabase
-      .from("contacts")
-      .select("*, deals(value)")
-      .eq("id", id)
-      .single();
-    
-    if (contactData) {
-      const dealValue = contactData.deals?.reduce((sum: number, d: any) => sum + Number(d.value), 0) || 0;
-      setContact({ ...contactData, total_value: dealValue });
-    }
-
-    // 2. Fetch Open Tasks
-    const { data: tasksData } = await supabase
-      .from("tasks")
-      .select("*")
-      .eq("contact_id", id)
-      .eq("is_completed", false)
-      .order("due_date", { ascending: true });
-    
-    if (tasksData) setTasks(tasksData);
-
-    // 3. Fetch Unified Timeline (Activities)
-    const { data: activities } = await supabase
-      .from("activities")
-      .select("*, users(full_name)")
-      .eq("contact_id", id);
-      
-    let mergedTimeline = (activities || []).map(a => ({
-      id: a.id,
-      date: new Date(a.created_at),
-      type: a.type, 
-      content: a.content,
-      actor: a.users?.full_name || "System"
-    }));
-
-    // Sort descending
-    mergedTimeline.sort((a, b) => b.date.getTime() - a.date.getTime());
-    setTimeline(mergedTimeline);
-  };
-
-  const handleSaveNote = async () => {
-    if (!noteContent.trim() || !activeOrgId || !userId) return;
-    setIsSavingNote(true);
-
-    const { error } = await supabase.from("activities").insert({
-      org_id: activeOrgId,
-      contact_id: id,
-      actor_id: userId,
-      type: "note",
-      content: noteContent
-    });
-
-    setIsSavingNote(false);
-    if (error) {
-      toast.error("Failed to save note");
-    } else {
-      toast.success("Note added");
-      setNoteContent("");
-      fetchData(); 
-    }
-  };
-
-  const toggleTask = async (taskId: string) => {
-    setTasks(prev => prev.filter(t => t.id !== taskId)); 
-    await supabase.from("tasks").update({ is_completed: true }).eq("id", taskId);
-    toast.success("Task completed");
-  };
-
-  const handleEmailClick = async () => {
-    if (!activeOrgId || !contact?.id) return;
-
-    const { data: existingThread } = await supabase
-      .from("threads")
-      .select("id")
-      .eq("org_id", activeOrgId)
-      .eq("contact_id", contact.id)
-      .eq("channel", "email")
-      .single();
-
-    if (existingThread) {
-      router.push(`/inbox?threadId=${existingThread.id}`);
-    } else {
-      const { data: newThread, error } = await supabase.from("threads").insert({
-        org_id: activeOrgId,
-        contact_id: contact.id,
-        channel: "email",
-        subject: `Conversation with ${contact.first_name}`
-      }).select("id").single();
-
-      if (!error && newThread) {
-        router.push(`/inbox?threadId=${newThread.id}`);
-      }
-    }
-  };
-
-  if (!contact) return (
-    <AppLayout>
-      <div className="h-full flex items-center justify-center">
-        <div className="animate-spin w-6 h-6 border-2 border-berry border-t-transparent rounded-full" />
-      </div>
-    </AppLayout>
-  );
-
-  return (
-    <AppLayout>
-      <div className="p-4 md:p-8 max-w-5xl mx-auto">
-        <button onClick={() => router.push('/contacts')} className="flex items-center gap-1 text-sm mb-6 text-slate font-body hover:text-ink transition-colors">
-          <ChevronLeft size={15} /> Back to Contacts
-        </button>
-
-        <div className="flex items-start gap-4 mb-8 flex-wrap">
-          <Avatar name={`${contact.first_name} ${contact.last_name}`} size={64} />
-          <div className="flex-1 min-w-[200px]">
-            <h1 className="font-display text-[32px] text-ink leading-tight">{contact.first_name} {contact.last_name}</h1>
-            <div className="flex items-center gap-2 mt-2 flex-wrap">
-              {contact.company_id && (
-                <span className="flex items-center gap-1 text-sm text-slate font-body">
-                  <Building2 size={13} /> Linked Company
-                </span>
-              )}
-              <Badge variant="slate">{contact.stage}</Badge>
-              {contact.type === 'patient' && <Badge variant="sage">Patient</Badge>}
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline" icon={Phone}>Call</Button>
-            <Button variant="outline" icon={Mail} onClick={handleEmailClick}>Email</Button>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
-          <div className="md:col-span-2 space-y-6">
-            <div className="rounded-xl p-5 bg-white border border-line shadow-sm">
-              <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Contact Details</div>
-              <div className="space-y-3">
-                <div className="flex justify-between text-sm">
-                  <span className="text-slate font-body">Email</span>
-                  <span className="text-ink font-body font-medium">{contact.email || "—"}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-slate font-body">Phone</span>
-                  <span className="text-ink font-mono font-medium">{contact.phone || "—"}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-slate font-body">Total Pipeline Value</span>
-                  <span className="text-ink font-mono font-medium text-sage">${contact.total_value.toLocaleString()}</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-xl p-5 bg-white border border-line shadow-sm">
-              <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Open Tasks</div>
-              {tasks.length === 0 ? (
-                <div className="text-sm text-slate font-body">No open tasks.</div>
-              ) : (
-                <div className="space-y-3">
-                  {tasks.map(t => (
-                    <div key={t.id} className="flex items-start gap-2.5">
-                      <button onClick={() => toggleTask(t.id)} className="mt-0.5 text-slate hover:text-sage transition-colors">
-                        <Circle size={15} />
-                      </button>
-                      <div>
-                        <div className="text-sm text-ink font-body font-medium leading-tight">{t.title}</div>
-                        <div className="text-[10px] text-berry font-mono mt-0.5">Due: {new Date(t.due_date).toLocaleDateString()}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="md:col-span-3 flex flex-col h-full">
-            <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Activity Timeline</div>
-            
-            <div className="rounded-xl p-4 bg-white border border-line shadow-sm mb-6 flex flex-col gap-3">
-              <textarea
-                value={noteContent}
-                onChange={(e) => setNoteContent(e.target.value)}
-                placeholder="Log a note..."
-                className="w-full text-sm outline-none resize-none font-body text-ink placeholder:text-slate bg-transparent h-16"
-              />
-              <div className="flex justify-between items-center border-t border-line pt-3">
-                <div className="flex gap-2 text-slate">
-                  <button className="hover:text-ink"><Edit3 size={15} /></button>
-                </div>
-                <Button onClick={handleSaveNote} disabled={isSavingNote || !noteContent.trim()}>
-                  {isSavingNote ? "Saving..." : "Save Note"}
-                </Button>
-              </div>
-            </div>
-
-            <div className="relative pl-6 flex-1">
-              <div className="absolute left-[11px] top-2 bottom-0 w-px bg-line" />
-              
-              {timeline.map((item, idx) => (
-                <div key={idx} className="relative mb-6">
-                  <div className="absolute -left-6 top-1 w-5 h-5 rounded-full flex items-center justify-center bg-paperDim border border-line z-10">
-                    {item.type === 'note' ? <Edit3 size={10} className="text-slate" /> : <CheckCircle2 size={10} className="text-berry" />}
-                  </div>
-                  
-                  <div className="rounded-xl p-4 bg-white border border-line shadow-sm">
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="text-sm font-medium text-ink font-body">
-                        {item.type === 'note' ? `${item.actor} left a note` : "Stage Change"}
-                      </span>
-                      <span className="text-[10px] text-slate font-mono">
-                        {item.date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-                      </span>
-                    </div>
-                    <div className="text-sm text-ink600 font-body whitespace-pre-wrap leading-relaxed">
-                      {item.content}
-                    </div>
-                  </div>
-                </div>
-              ))}
-              
-              {timeline.length === 0 && (
-                <div className="text-sm text-slate font-body ml-2">No activity recorded yet.</div>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-      <Toaster position="top-right" richColors />
     </AppLayout>
   );
 }
@@ -3409,109 +2847,233 @@ export default function ReportsPage() {
 }
 </file>
 
-<file path="src/app/tasks/page.tsx">
+<file path="src/app/settings/team/page.tsx">
 "use client";
 import React, { useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SectionTitle } from "@/components/ui/SectionTitle";
 import { Button } from "@/components/ui/Button";
-import { Plus, CheckCircle2, Circle } from "lucide-react";
-import { useAppStore } from "@/store/useAppStore";
+import { Input } from "@/components/ui/Input";
+import { Avatar } from "@/components/ui/Avatar";
+import { UserPlus, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase";
-import { TaskFormModal } from "@/components/features/tasks/TaskFormModal";
-import { Toaster, toast } from "sonner";
+import { useAppStore } from "@/store/useAppStore";
+import { toast, Toaster } from "sonner";
+import { Modal } from "@/components/ui/Modal";
 
-export default function TasksPage() {
-  const { currentWorkspace, activeOrgId, userId } = useAppStore();
+export default function TeamSettingsPage() {
   const supabase = createClient();
-  const [tasks, setTasks] = useState<any[]>([]);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const { activeOrgId, userRole, userId } = useAppStore();
+  
+  const [members, setMembers] = useState<any[]>([]);
+  const [isInviteOpen, setIsInviteOpen] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("rep");
+  const [isInviting, setIsInviting] = useState(false);
+  
+  const [isMounted, setIsMounted] = useState(false);
+  
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
-  const fetchTasks = async () => {
-    if (!activeOrgId || !userId) return;
-    
+  const fetchTeam = async () => {
+    if (!activeOrgId) return;
     const { data, error } = await supabase
-      .from("tasks")
-      .select("*, contacts(first_name, last_name)")
+      .from("memberships")
+      .select("role, created_at, users(id, full_name, email)")
       .eq("org_id", activeOrgId)
-      // If a user is a rep, they might only want to see their own tasks.
-      // For now, we load org tasks but can filter locally or on DB level.
-      .order("due_date", { ascending: true });
+      .order("created_at", { ascending: true });
 
-    if (!error && data) setTasks(data);
+    if (error) {
+      toast.error("Failed to load team data.");
+      return;
+    }
+
+    if (data) setMembers(data);
   };
 
   useEffect(() => {
-    fetchTasks();
-  }, [activeOrgId, userId]);
+    fetchTeam();
+  }, [activeOrgId]);
 
-  const toggleTask = async (taskId: string, currentStatus: boolean) => {
-    // Optimistic UI
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, is_completed: !currentStatus } : t));
+  const handleInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteEmail || !activeOrgId) return;
     
-    const { error } = await supabase.from("tasks").update({ is_completed: !currentStatus }).eq("id", taskId);
-    if (error) {
-      toast.error("Failed to update task");
-      fetchTasks(); // Rollback
+    setIsInviting(true);
+    const res = await fetch("/api/team/invite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: inviteEmail, role: inviteRole, org_id: activeOrgId })
+    });
+
+    const data = await res.json();
+    setIsInviting(false);
+
+    if (res.ok) {
+      toast.success("Invite sent successfully!");
+      setIsInviteOpen(false);
+      setInviteEmail("");
+      setInviteRole("rep");
+      fetchTeam();
+    } else {
+      toast.error(data.error || "Failed to invite user");
     }
   };
 
-  // Date bucketing logic
-  const todayStr = new Date().toISOString().split("T")[0];
-  
-  const categorizedTasks = {
-    "Overdue": tasks.filter(t => !t.is_completed && t.due_date < todayStr),
-    "Today": tasks.filter(t => !t.is_completed && t.due_date === todayStr),
-    "Upcoming": tasks.filter(t => !t.is_completed && t.due_date > todayStr),
-    "Completed": tasks.filter(t => t.is_completed)
+  const handleRoleChange = async (targetUserId: string, newRole: string) => {
+    const { error } = await supabase
+      .from("memberships")
+      .update({ role: newRole })
+      .eq("user_id", targetUserId)
+      .eq("org_id", activeOrgId);
+
+    if (error) {
+      toast.error("Failed to update role");
+      fetchTeam(); // Rollback UI if failed
+    } else {
+      toast.success("Role updated successfully");
+      fetchTeam();
+    }
   };
+
+  const handleRemoveMember = async (targetUserId: string) => {
+    if (!window.confirm("Are you sure you want to revoke this user's access to the workspace?")) return;
+
+    const { error } = await supabase
+      .from("memberships")
+      .delete()
+      .eq("user_id", targetUserId)
+      .eq("org_id", activeOrgId);
+
+    if (error) {
+      toast.error("Failed to remove member");
+    } else {
+      toast.success("User access revoked");
+      fetchTeam();
+    }
+  };
+
+  const isManager = userRole?.toLowerCase() === 'owner' || userRole?.toLowerCase() === 'manager';
 
   return (
     <AppLayout>
-      <div className="p-4 md:p-8 max-w-3xl mx-auto">
+      <div className="p-4 md:p-8 max-w-5xl mx-auto flex-1 w-full">
         <SectionTitle 
-          eyebrow={currentWorkspace === "agency" ? "Agency Workspace" : "Clinic Workspace"}
-          title="Tasks" 
-          action={<Button icon={Plus} onClick={() => setIsModalOpen(true)}>New Task</Button>} 
+          eyebrow="Settings"
+          title="Team Management" 
+          action={
+            isMounted && isManager ? (
+              <Button icon={UserPlus} onClick={() => setIsInviteOpen(true)}>Invite Member</Button>
+            ) : null
+          }
         />
-        
-        {Object.entries(categorizedTasks).map(([group, items]) => {
-          if (items.length === 0) return null;
-          return (
-            <div key={group} className="mb-8">
-              <div className={`text-xs uppercase mb-2 tracking-[0.06em] font-body font-medium ${group === "Overdue" ? "text-berry" : "text-slate"}`}>
-                {group} <span className="ml-1 opacity-60">({items.length})</span>
-              </div>
-              <div className="rounded-xl overflow-hidden border border-line bg-white shadow-card">
-                {items.map((t) => (
-                  <div key={t.id} className="flex items-center gap-3 px-4 py-3 border-b border-line last:border-0 hover:bg-paperDim/30 transition-colors">
-                    <button onClick={() => toggleTask(t.id, t.is_completed)}>
-                      {t.is_completed ? <CheckCircle2 size={18} className="text-sage" /> : <Circle size={18} className="text-slate hover:text-sage transition-colors" />}
-                    </button>
-                    <div className="flex-1">
-                      <div className={`text-sm font-body font-medium ${t.is_completed ? "text-slate line-through" : "text-ink"}`}>
-                        {t.title}
+
+        <div className="rounded-xl overflow-x-auto border border-line bg-white shadow-card">
+          <table className="w-full text-sm font-body min-w-[600px]">
+            <thead className="bg-paperDim border-b border-line">
+              <tr>
+                <th className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em] w-1/2">Team Member</th>
+                <th className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em] w-1/4">Role</th>
+                <th className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em] w-1/4">Joined</th>
+                <th className="text-right px-5 py-3 text-xs uppercase text-slate tracking-[0.05em]">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {members.map((m) => {
+                const targetId = m.users?.id;
+                const isSelf = targetId === userId;
+                
+                return (
+                  <tr key={targetId} className="border-b border-line hover:bg-paperDim/50 transition-colors group">
+                    <td className="px-5 py-3">
+                      <div className="flex items-center gap-3">
+                        <Avatar name={m.users?.full_name || m.users?.email || "Unknown"} size={32} />
+                        <div>
+                          <div className="font-medium text-ink flex items-center gap-2">
+                            {m.users?.full_name || "Invited User"}
+                            {isSelf && <span className="text-[10px] bg-inkSoft text-paper px-1.5 py-0.5 rounded uppercase tracking-wide">You</span>}
+                          </div>
+                          <div className="text-xs text-slate font-mono">{m.users?.email}</div>
+                        </div>
                       </div>
-                      <div className="text-xs text-slate font-body mt-0.5">
-                        {t.contacts?.first_name} {t.contacts?.last_name}
-                        {group !== "Today" && group !== "Completed" && ` • Due: ${new Date(t.due_date).toLocaleDateString()}`}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                    </td>
+                    <td className="px-5 py-3">
+                      {isManager && !isSelf ? (
+                        <select
+                          value={m.role}
+                          onChange={(e) => handleRoleChange(targetId, e.target.value)}
+                          className="px-2 py-1 bg-paperDim border border-transparent rounded outline-none focus:border-berry text-xs uppercase font-medium text-ink cursor-pointer hover:bg-[#E0DFDA] transition-colors"
+                        >
+                          <option value="rep">REP</option>
+                          <option value="manager">MANAGER</option>
+                          <option value="owner">OWNER</option>
+                        </select>
+                      ) : (
+                        <span className={`px-2 py-1 rounded text-xs uppercase font-medium ${
+                          m.role === 'owner' ? 'bg-sageSoft text-sage' : m.role === 'manager' ? 'bg-amberSoft text-amber' : 'bg-paperDim text-slate'
+                        }`}>
+                          {m.role}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-5 py-3 text-slate">
+                      {new Date(m.created_at).toLocaleDateString()}
+                    </td>
+                    <td className="px-5 py-3 text-right">
+                      {isManager && !isSelf && (
+                        <button 
+                          onClick={() => handleRemoveMember(targetId)}
+                          className="p-2 text-slate hover:text-berry opacity-0 group-hover:opacity-100 transition-all rounded-lg hover:bg-berrySoft/50"
+                          title="Revoke Access"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          
+          {members.length === 0 && (
+             <div className="p-8 text-center text-slate text-sm font-body">No team members found.</div>
+          )}
+        </div>
+
+        <Modal isOpen={isInviteOpen} onClose={() => setIsInviteOpen(false)} title="Invite Team Member">
+          <form onSubmit={handleInvite} className="space-y-4">
+            <Input 
+              label="Email Address" 
+              type="email" 
+              placeholder="name@pyrexxai.com" 
+              value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)}
+              required
+            />
+            <div className="w-full flex flex-col gap-1.5 mb-3">
+              <label className="text-xs text-slate font-body font-medium">Role</label>
+              <select 
+                value={inviteRole}
+                onChange={(e) => setInviteRole(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg text-sm outline-none bg-paperDim font-body text-ink border border-transparent focus:border-berry transition-all"
+              >
+                <option value="rep">Sales Rep (Restricted View)</option>
+                <option value="manager">Manager (Global View)</option>
+                <option value="owner">Owner (Admin Access)</option>
+              </select>
             </div>
-          );
-        })}
-
-        {tasks.length === 0 && (
-          <div className="p-8 text-center text-slate font-body bg-white border border-line rounded-xl shadow-card">
-            No tasks found. Click 'New Task' to schedule a follow-up.
-          </div>
-        )}
+            <div className="flex justify-end gap-3 pt-4 border-t border-line">
+              <Button type="button" variant="ghost" onClick={() => setIsInviteOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={isInviting}>
+                {isInviting ? "Sending Invite..." : "Send Invite"}
+              </Button>
+            </div>
+          </form>
+        </Modal>
       </div>
-
-      <TaskFormModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSuccess={fetchTasks} />
       <Toaster position="top-right" richColors />
     </AppLayout>
   );
@@ -4065,128 +3627,122 @@ export function NextActionModal({ isOpen, dealId, contactId, newStage, onCancel,
 }
 </file>
 
-<file path="src/components/features/pipeline/PipelineBoard.tsx">
+<file path="src/components/features/pipeline/PipelineCard.tsx">
 "use client";
-import React, { useState, useEffect } from "react";
-import { DndContext, DragEndEvent, closestCorners } from "@dnd-kit/core";
-import { PipelineColumn } from "./PipelineColumn";
-import { createClient } from "@/lib/supabase";
-import { useAppStore } from "@/store/useAppStore";
-import { SectionTitle } from "@/components/ui/SectionTitle";
-import { Button } from "@/components/ui/Button";
-import { Plus } from "lucide-react";
-import { DealFormModal } from "./DealFormModal";
-import { NextActionModal } from "./NextActionModal";
-import { toast } from "sonner";
+import React from "react";
+import { useDraggable } from "@dnd-kit/core";
+import { Avatar } from "@/components/ui/Avatar";
+import { Badge } from "@/components/ui/Badge";
+import { CSS } from "@dnd-kit/utilities";
 
-const STAGES = ["New Lead", "Demo Scheduled", "Proposal Sent", "Contract Sent", "Onboarding", "Active Client"];
+interface PipelineCardProps {
+  deal: {
+    id: string;
+    name: string;
+    value: number;
+    stage: string; 
+    next_action: string | null; 
+    is_overdue: boolean;
+    contacts: { first_name: string; last_name: string } | null;
+  };
+  onClick: (deal: any) => void; // <-- Added onClick prop
+}
 
-export function PipelineBoard() {
-  const supabase = createClient();
-  const { activeOrgId, currentWorkspace } = useAppStore();
-  const [deals, setDeals] = useState<any[]>([]);
-  const [isDealModalOpen, setIsDealModalOpen] = useState(false);
-  
-  // State to hold the interrupted drag event for Enforced Workflows
-  const [pendingMove, setPendingMove] = useState<{ dealId: string, contactId: string, newStage: string, prevStage: string } | null>(null);
+export function PipelineCard({ deal, onClick }: PipelineCardProps) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: deal.id,
+    data: { stage: deal.stage, deal },
+  });
 
-  const fetchDeals = async () => {
-    if (!activeOrgId) return;
-    const { data, error } = await supabase
-      .from("deals")
-      .select(`*, contacts (first_name, last_name)`)
-      .eq("org_id", activeOrgId);
-      
-    if (!error && data) setDeals(data);
+  const style = {
+    transform: CSS.Translate.toString(transform),
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 999 : "auto",
   };
 
-  useEffect(() => {
-    fetchDeals();
-  }, [activeOrgId]);
-
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
-    if (!over) return;
-
-    const dealId = active.id as string;
-    const dealData = active.data.current?.deal;
-    const currentStage = dealData.stage;
-    const newStage = over.id as string;
-
-    if (currentStage === newStage) return;
-
-    // 1. Optimistic UI Update (Snap immediately to new column for snappy UX)
-    setDeals(prev => prev.map(d => d.id === dealId ? { ...d, stage: newStage } : d));
-
-    // 2. Intercept and Enforce Next Action
-    setPendingMove({ 
-      dealId, 
-      contactId: dealData.contact_id, 
-      newStage, 
-      prevStage: currentStage 
-    });
-  };
-
-  const handleCancelMove = () => {
-    // Rollback the optimistic update
-    if (pendingMove) {
-      setDeals(prev => prev.map(d => d.id === pendingMove.dealId ? { ...d, stage: pendingMove.prevStage } : d));
-      setPendingMove(null);
-    }
-  };
-
-  const handleConfirmMove = () => {
-    setPendingMove(null);
-    fetchDeals(); // Re-sync with database to grab the updated next_action
-  };
-
-  const openValue = deals
-    .filter(d => d.stage !== "Active Client")
-    .reduce((sum, d) => sum + Number(d.value), 0);
+  const contactName = deal.contacts ? `${deal.contacts.first_name} ${deal.contacts.last_name}` : "Unknown";
 
   return (
-    <div className="flex flex-col h-full w-full">
-      <div className="flex-shrink-0 px-4 md:px-8 pt-4 md:pt-8">
-        <SectionTitle 
-          eyebrow={currentWorkspace === "agency" ? "Agency Workspace" : "Clinic Workspace"}
-          title="Pipeline" 
-          action={
-            <div className="flex items-center gap-4">
-              <span className="hidden sm:inline-block text-sm text-slate font-mono font-medium bg-paperDim px-3 py-1.5 rounded-lg border border-line">
-                Pipeline Value: <span className="text-ink">${openValue.toLocaleString()}</span>
-              </span>
-              <Button icon={Plus} onClick={() => setIsDealModalOpen(true)}>New Deal</Button>
-            </div>
-          } 
-        />
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      onPointerUp={(e) => {
+        // Prevent click if we were just dragging
+        if (!isDragging) onClick(deal);
+      }}
+      className="rounded-lg p-3 cursor-grab active:cursor-grabbing bg-white border border-line shadow-sm hover:shadow-md transition-shadow relative"
+    >
+      <div className="flex items-center gap-2 mb-2 pointer-events-none">
+        <Avatar name={contactName} size={22} />
+        <span className="text-sm text-ink font-body font-medium truncate">{deal.name}</span>
       </div>
-
-      <div className="flex-1 overflow-x-auto overflow-y-hidden px-4 md:px-8 pb-4">
-        <div className="flex gap-4 md:gap-6 h-full snap-x snap-mandatory md:snap-none w-max">
-          <DndContext collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
-            {STAGES.map((stage) => (
-              <PipelineColumn 
-                key={stage} 
-                stage={stage} 
-                deals={deals.filter(d => d.stage === stage)} 
-              />
-            ))}
-          </DndContext>
+      <div className="flex items-center justify-between mb-2 pointer-events-none">
+        <span className="text-sm text-ink font-mono font-medium">
+          ${Number(deal.value).toLocaleString()}
+        </span>
+        {deal.is_overdue && <Badge variant="berry">Overdue</Badge>}
+      </div>
+      {deal.next_action && (
+        <div className="text-xs text-slate font-body mt-2 truncate pointer-events-none">
+          <span className="font-medium">Next:</span> {deal.next_action}
         </div>
-      </div>
-
-      <DealFormModal isOpen={isDealModalOpen} onClose={() => setIsDealModalOpen(false)} onSuccess={fetchDeals} />
-      
-      {pendingMove && (
-        <NextActionModal 
-          isOpen={true}
-          dealId={pendingMove.dealId}
-          contactId={pendingMove.contactId}
-          newStage={pendingMove.newStage}
-          onCancel={handleCancelMove}
-          onSuccess={handleConfirmMove}
-        />
       )}
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/features/pipeline/PipelineColumn.tsx">
+"use client";
+import React from "react";
+import { useDroppable } from "@dnd-kit/core";
+import { PipelineCard } from "./PipelineCard";
+
+interface PipelineColumnProps {
+  stage: string;
+  deals: any[];
+  onDealClick: (deal: any) => void;
+  hiddenCount?: number; // <-- Added to show "Archived" count
+}
+
+export function PipelineColumn({ stage, deals, onDealClick, hiddenCount = 0 }: PipelineColumnProps) {
+  const { setNodeRef, isOver } = useDroppable({ id: stage });
+
+  const stageColorMap: Record<string, string> = {
+    "New Lead": "#6B6E77",
+    "Demo Scheduled": "#D69A32",
+    "Proposal Sent": "#D69A32",
+    "Contract Sent": "#AF3358",
+    "Onboarding": "#AF3358",
+    "Active Client": "#4C8A67",
+  };
+
+  const stageColor = stageColorMap[stage] || "#6B6E77";
+  // The value is calculated off the sliced array so UI matches the displayed cards
+  const stageValue = deals.reduce((sum, d) => sum + Number(d.value), 0);
+
+  return (
+    <div className="w-[85vw] sm:w-[280px] flex-shrink-0 snap-start flex flex-col h-full max-h-full">
+      <div className="pt-2 pb-3 px-1 mb-2 sticky top-0 bg-paper z-10" style={{ borderTop: `3px solid ${stageColor}` }}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-sm font-medium text-ink font-body uppercase tracking-[0.05em]">{stage}</span>
+          <span className="text-xs text-slate font-mono bg-paperDim px-1.5 py-0.5 rounded">{deals.length + hiddenCount}</span>
+        </div>
+        <div className="text-xs text-slate font-mono">${stageValue.toLocaleString()}</div>
+      </div>
+      
+      <div ref={setNodeRef} className={`space-y-3 min-h-[150px] p-1.5 rounded-lg transition-colors flex-1 overflow-y-auto pb-6 ${isOver ? "bg-paperDim/80 border border-dashed border-slate/50" : "bg-transparent border border-transparent"}`}>
+        {deals.map(deal => (
+          <PipelineCard key={deal.id} deal={deal} onClick={onDealClick} />
+        ))}
+        {hiddenCount > 0 && (
+          <div className="text-center p-3 text-xs text-slate font-body bg-paperDim/50 rounded-lg border border-dashed border-line">
+            + {hiddenCount} older deals archived
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -4305,133 +3861,115 @@ export function TaskFormModal({ isOpen, onClose, onSuccess }: { isOpen: boolean;
 }
 </file>
 
-<file path="src/components/layout/MobileDrawer.tsx">
+<file path="src/components/layout/Topbar.tsx">
 "use client";
-import React, { useEffect } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { useAppStore } from "@/store/useAppStore";
-import { PulseTrace } from "@/components/ui/PulseTrace";
+import { Menu, Search, Bell, User, LogOut } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
-import { X } from "lucide-react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { 
-  LayoutDashboard, Users, Columns, Inbox, CheckSquare, 
-  BarChart3, PhoneOutgoing, Building2, Phone, Settings, Blocks
-} from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase";
 
-const AGENCY_NAV = [
-  { key: "dashboard", label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { key: "contacts", label: "Contacts", href: "/contacts", icon: Users },
-  { key: "pipeline", label: "Pipeline", href: "/pipeline", icon: Columns },
-  { key: "inbox", label: "Inbox", href: "/inbox", icon: Inbox },
-  { key: "tasks", label: "Tasks", href: "/tasks", icon: CheckSquare },
-  { key: "dialer", label: "Dialer", href: "/dialer", icon: PhoneOutgoing },
-  { key: "accounts", label: "Accounts", href: "/accounts", icon: Building2 },
-  { key: "reports", label: "Reports", href: "/reports", icon: BarChart3 },
-];
-
-const CLINIC_NAV = [
-  { key: "clinicDashboard", label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { key: "patients", label: "Patients", href: "/contacts", icon: Users },
-  { key: "calls", label: "Calls", href: "/calls", icon: Phone },
-  { key: "inbox", label: "Inbox", href: "/inbox", icon: Inbox },
-  { key: "dialer", label: "Dialer", href: "/dialer", icon: PhoneOutgoing },
-  { key: "reports", label: "Reports", href: "/reports", icon: BarChart3 },
-];
-
-export function MobileDrawer() {
-  const { mobileMenuOpen, setMobileMenuOpen, currentWorkspace, setWorkspace } = useAppStore();
+export function Topbar() {
+  const { setMobileMenuOpen, setCommandPaletteOpen, userRole, setActiveOrgId, setUser } = useAppStore();
   const pathname = usePathname();
-  const nav = currentWorkspace === "agency" ? AGENCY_NAV : CLINIC_NAV;
+  const router = useRouter();
+  const supabase = createClient();
+  
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
+  const notifRef = useRef<HTMLDivElement>(null);
 
+  // Close dropdowns when clicking outside
   useEffect(() => {
-    if (mobileMenuOpen) document.body.style.overflow = 'hidden';
-    else document.body.style.overflow = 'unset';
-    return () => { document.body.style.overflow = 'unset'; };
-  }, [mobileMenuOpen]);
+    const handleClickOutside = (event: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(event.target as Node)) setProfileOpen(false);
+      if (notifRef.current && !notifRef.current.contains(event.target as Node)) setNotificationsOpen(false);
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
-  if (!mobileMenuOpen) return null;
+  const getTitle = () => {
+    const path = pathname.split('/')[1] || 'dashboard';
+    return path.charAt(0).toUpperCase() + path.slice(1);
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setActiveOrgId(null);
+    setUser(null, null);
+    router.push('/auth/login');
+  };
 
   return (
-    <div className="md:hidden fixed inset-0 z-50 flex flex-col bg-ink">
-      <div className="flex items-center justify-between px-5 pt-6 pb-4">
-        <div className="flex items-center gap-2">
-          <PulseTrace sentiment="positive" size="sm" />
-          <span className="font-body font-bold text-paper text-[15px]">Pyrexx CRM</span>
-        </div>
-        <button onClick={() => setMobileMenuOpen(false)}>
-          <X size={20} className="text-paper" />
+    <div className="flex items-center justify-between px-4 md:px-8 py-4 border-b border-line bg-paper z-20">
+      <div className="flex items-center gap-3">
+        <button onClick={() => setMobileMenuOpen(true)} className="md:hidden text-ink">
+          <Menu size={20} />
         </button>
-      </div>
-
-      <div className="px-4 mb-5">
-        <div className="flex rounded-lg p-0.5 bg-inkSoft">
-          {[
-            { key: "agency", label: "Agency" },
-            { key: "clinic", label: "Bloom MedSpa" },
-          ].map((w) => (
-            <button
-              key={w.key}
-              onClick={() => {
-                setWorkspace(w.key as "agency" | "clinic");
-                setMobileMenuOpen(false);
-              }}
-              className={`flex-1 text-xs py-1.5 rounded-md transition-colors font-body ${
-                currentWorkspace === w.key ? "text-ink bg-paper" : "text-slate bg-transparent hover:text-paper"
-              }`}
-            >
-              {w.label}
-            </button>
-          ))}
+        <div className="text-sm text-slate font-body font-medium">
+          {getTitle()}
         </div>
       </div>
+      
+      <div className="flex items-center gap-3 md:gap-4">
+        {/* Fake Search Input -> Triggers Cmd+K */}
+        <div className="relative hidden sm:block cursor-text" onClick={() => setCommandPaletteOpen(true)}>
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate" />
+          <div className="pl-8 pr-3 py-1.5 rounded-lg text-sm w-48 md:w-64 bg-paperDim border border-transparent font-body text-slate flex items-center justify-between hover:bg-white hover:border-line transition-all">
+            <span>Search...</span>
+            <span className="text-[10px] font-mono bg-line/50 px-1.5 rounded">⌘K</span>
+          </div>
+        </div>
 
-      <div className="flex-1 px-3 space-y-0.5 overflow-y-auto">
-        {nav.map((item) => {
-          const Icon = item.icon;
-          const active = pathname === item.href;
-          return (
-            <Link
-              key={item.key}
-              href={item.href}
-              onClick={() => setMobileMenuOpen(false)}
-              className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${
-                active ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
-              }`}
-            >
-              <Icon size={18} /> {item.label}
-            </Link>
-          );
-        })}
-        
-        {/* Added Integrations & Team Settings for Mobile */}
-        <div className="my-2 border-t border-inkSoft/50 pt-2" />
-        
-        <Link
-          href="/settings/integrations"
-          onClick={() => setMobileMenuOpen(false)}
-          className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${
-            pathname === "/settings/integrations" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
-          }`}
-        >
-          <Blocks size={18} /> Integrations & Auto
-        </Link>
-        <Link
-          href="/settings/team"
-          onClick={() => setMobileMenuOpen(false)}
-          className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${
-            pathname === "/settings/team" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
-          }`}
-        >
-          <Settings size={18} /> Settings & Team
-        </Link>
-      </div>
+        <button className="sm:hidden text-slate" onClick={() => setCommandPaletteOpen(true)}>
+          <Search size={17} />
+        </button>
 
-      <div className="p-4 flex items-center gap-2.5 border-t border-inkSoft pb-safe">
-        <Avatar name="Pyrexx User" size={30} />
-        <div className="text-xs font-body">
-          <div className="text-paper">Pyrexx User</div>
-          <div className="text-slate">Active Session</div>
+        {/* Notifications Dropdown */}
+        <div className="relative" ref={notifRef}>
+          <button className="relative p-1" onClick={() => setNotificationsOpen(!notificationsOpen)}>
+            <Bell size={17} className="text-slate hover:text-ink transition-colors" />
+            <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-berry border border-paper" />
+          </button>
+          
+          {notificationsOpen && (
+            <div className="absolute right-0 mt-2 w-72 bg-white rounded-xl shadow-xl border border-line overflow-hidden z-50">
+              <div className="px-4 py-3 border-b border-line bg-paperDim/50">
+                <span className="text-sm font-medium text-ink font-body">Notifications</span>
+              </div>
+              <div className="p-4 text-center text-sm text-slate font-body">
+                You're all caught up!
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Avatar Dropdown */}
+        <div className="relative" ref={profileRef}>
+          <div onClick={() => setProfileOpen(!profileOpen)} className="cursor-pointer">
+            <Avatar name={userRole?.toUpperCase() || "Pyrexx"} size={28} className="hover:ring-2 hover:ring-berry hover:ring-offset-1 transition-all" />
+          </div>
+          
+          {profileOpen && (
+            <div className="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-xl border border-line overflow-hidden z-50">
+              <button 
+                onClick={() => { setProfileOpen(false); router.push('/settings/profile'); }}
+                className="w-full text-left px-4 py-2.5 text-sm text-ink font-body hover:bg-paperDim transition-colors flex items-center gap-2"
+              >
+                <User size={14} className="text-slate" /> Profile Settings
+              </button>
+              <div className="border-t border-line" />
+              <button 
+                onClick={handleLogout}
+                className="w-full text-left px-4 py-2.5 text-sm text-berry font-body hover:bg-berrySoft transition-colors flex items-center gap-2"
+              >
+                <LogOut size={14} /> Sign out
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -4439,117 +3977,267 @@ export function MobileDrawer() {
 }
 </file>
 
-<file path="src/components/layout/Sidebar.tsx">
+<file path="src/components/providers/AuthProvider.tsx">
 "use client";
-import React from "react";
+import React, { useEffect, useState } from 'react';
+import { createClient } from '@/lib/supabase';
+import { useAppStore, Workspace } from '@/store/useAppStore';
+import { useRouter } from 'next/navigation';
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const supabase = createClient();
+  const router = useRouter();
+  const { activeOrgId, setActiveOrgId, setUser, setWorkspace, setWorkspaces } = useAppStore();
+  const [isBootstrapping, setIsBootstrapping] = useState(true);
+
+  useEffect(() => {
+    const bootstrap = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) {
+        setIsBootstrapping(false);
+        return;
+      }
+
+      const { data: memberships } = await supabase
+        .from('memberships')
+        .select('role, org_id, organizations(id, name, type)')
+        .eq('user_id', user.id);
+
+      if (memberships && memberships.length > 0) {
+        const availableWorkspaces: Workspace[] = [];
+        
+        // FIX: Explicitly type this as 'any' so TypeScript doesn't lock it as 'null'
+        let agencyMembership: any = null;
+
+        memberships.forEach((m: any) => {
+          const org = Array.isArray(m.organizations) ? m.organizations[0] : m.organizations;
+          if (org) {
+            availableWorkspaces.push({
+              id: org.id,
+              name: org.name,
+              type: org.type as 'agency' | 'clinic'
+            });
+
+            if (org.type === 'agency') {
+              agencyMembership = m;
+            }
+          }
+        });
+
+        setWorkspaces(availableWorkspaces);
+
+        // FIX: Explicitly type 'm' as 'any' in the find method
+        const currentMembership = memberships.find((m: any) => m.org_id === activeOrgId);
+        
+        if (currentMembership) {
+          setUser(user.id, currentMembership.role);
+        } else if (agencyMembership) {
+          setUser(user.id, agencyMembership.role);
+        } else {
+          setUser(user.id, memberships[0].role);
+        }
+
+        const validOrgIds = availableWorkspaces.map(w => w.id);
+        if (!activeOrgId || !validOrgIds.includes(activeOrgId)) {
+          if (agencyMembership) {
+            setActiveOrgId(agencyMembership.org_id);
+            setWorkspace('agency');
+          } else {
+            setActiveOrgId(availableWorkspaces[0].id);
+            setWorkspace(availableWorkspaces[0].type);
+          }
+        }
+      }
+
+      setIsBootstrapping(false);
+    };
+
+    bootstrap();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        setActiveOrgId(null);
+        setUser(null, null);
+        setWorkspaces([]);
+        router.push('/auth/login');
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [supabase, activeOrgId, setActiveOrgId, setUser, setWorkspace, setWorkspaces, router]);
+
+  if (isBootstrapping) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-paper">
+        <div className="w-6 h-6 border-2 border-berry border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
+</file>
+
+<file path="src/components/ui/CommandPalette.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { Search, User, Building2, Columns, X } from "lucide-react";
+import { createClient } from "@/lib/supabase";
 import { useAppStore } from "@/store/useAppStore";
-import { PulseTrace } from "@/components/ui/PulseTrace";
-import { Avatar } from "@/components/ui/Avatar";
-import { 
-  LayoutDashboard, Users, Columns, Inbox, CheckSquare, 
-  BarChart3, PhoneOutgoing, Building2, Phone, Settings, Blocks
-} from "lucide-react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { Badge } from "@/components/ui/Badge";
 
-const AGENCY_NAV = [
-  { key: "dashboard", label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { key: "contacts", label: "Contacts", href: "/contacts", icon: Users },
-  { key: "pipeline", label: "Pipeline", href: "/pipeline", icon: Columns },
-  { key: "inbox", label: "Inbox", href: "/inbox", icon: Inbox },
-  { key: "tasks", label: "Tasks", href: "/tasks", icon: CheckSquare },
-  { key: "dialer", label: "Dialer", href: "/dialer", icon: PhoneOutgoing },
-  { key: "accounts", label: "Accounts", href: "/accounts", icon: Building2 },
-  { key: "reports", label: "Reports", href: "/reports", icon: BarChart3 },
-];
+export function CommandPalette() {
+  const { commandPaletteOpen, setCommandPaletteOpen, activeOrgId, currentWorkspace } = useAppStore();
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<{ type: string; id: string; title: string; subtitle: string }[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  
+  const router = useRouter();
+  const supabase = createClient();
 
-const CLINIC_NAV = [
-  { key: "clinicDashboard", label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { key: "patients", label: "Patients", href: "/contacts", icon: Users },
-  { key: "calls", label: "Calls", href: "/calls", icon: Phone },
-  { key: "inbox", label: "Inbox", href: "/inbox", icon: Inbox },
-  { key: "dialer", label: "Dialer", href: "/dialer", icon: PhoneOutgoing },
-  { key: "reports", label: "Reports", href: "/reports", icon: BarChart3 },
-];
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setCommandPaletteOpen(!commandPaletteOpen);
+      }
+      if (e.key === "Escape") setCommandPaletteOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [commandPaletteOpen, setCommandPaletteOpen]);
 
-export function Sidebar() {
-  const { currentWorkspace, setWorkspace } = useAppStore();
-  const pathname = usePathname();
-  const nav = currentWorkspace === "agency" ? AGENCY_NAV : CLINIC_NAV;
+  useEffect(() => {
+    if (!query.trim() || !activeOrgId) {
+      setResults([]);
+      return;
+    }
+
+    const searchDb = async () => {
+      setIsLoading(true);
+      const searchQ = query.trim();
+      let combinedResults: any[] = [];
+
+      const { data: contacts } = await supabase
+        .from("contacts")
+        .select("id, first_name, last_name, email")
+        .eq("org_id", activeOrgId)
+        .textSearch("search_vector", searchQ, { type: 'websearch', config: 'english' })
+        .limit(5);
+
+      if (contacts) {
+        const mappedContacts = contacts.map(c => ({
+          type: "Contact", 
+          id: c.id, 
+          title: `${c.first_name} ${c.last_name}`, 
+          subtitle: c.email || "No email"
+        }));
+        combinedResults.push(...mappedContacts);
+      }
+
+      const { data: deals } = await supabase
+        .from("deals")
+        .select("id, name, stage")
+        .eq("org_id", activeOrgId)
+        .ilike("name", `%${searchQ}%`)
+        .limit(3);
+
+      if (deals) {
+        const mappedDeals = deals.map(d => ({
+          type: "Deal", 
+          id: "pipeline", 
+          title: d.name, 
+          subtitle: `Stage: ${d.stage}`
+        }));
+        combinedResults.push(...mappedDeals);
+      }
+
+      if (currentWorkspace === "agency") {
+        const { data: orgs } = await supabase
+          .from("organizations")
+          .select("id, name, slug")
+          .eq("type", "clinic")
+          .ilike("name", `%${searchQ}%`)
+          .limit(3);
+
+        if (orgs) {
+          const mappedOrgs = orgs.map(o => ({
+            type: "Account", 
+            id: o.id, 
+            title: o.name, 
+            subtitle: `${o.slug}@app.pyrexxai.com`
+          }));
+          combinedResults.push(...mappedOrgs);
+        }
+      }
+
+      setResults(combinedResults);
+      setIsLoading(false);
+    };
+
+    const debounceId = setTimeout(searchDb, 300);
+    return () => clearTimeout(debounceId);
+  }, [query, activeOrgId, currentWorkspace, supabase]);
+
+  const handleSelect = (result: any) => {
+    setCommandPaletteOpen(false);
+    setQuery("");
+    if (result.type === "Contact") router.push(`/contacts/${result.id}`);
+    if (result.type === "Deal") router.push(`/pipeline`);
+    if (result.type === "Account") router.push(`/accounts`);
+  };
+
+  if (!commandPaletteOpen) return null;
 
   return (
-    <div className="hidden md:flex w-60 flex-shrink-0 flex-col h-full bg-ink z-20">
-      <div className="px-5 pt-6 pb-5 flex items-center gap-2">
-        <PulseTrace sentiment="positive" size="sm" />
-        <span className="font-body font-bold text-paper text-[15px]">Pyrexx</span>
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-inkSoft text-slate font-mono">CRM</span>
-      </div>
-
-      <div className="px-4 mb-5">
-        <div className="flex rounded-lg p-0.5 bg-inkSoft">
-          {[
-            { key: "agency", label: "Agency" },
-            { key: "clinic", label: "Bloom MedSpa" },
-          ].map((w) => (
-            <button
-              key={w.key}
-              onClick={() => setWorkspace(w.key as "agency" | "clinic")}
-              className={`flex-1 text-xs py-1.5 rounded-md transition-colors font-body ${
-                currentWorkspace === w.key ? "text-ink bg-paper" : "text-slate bg-transparent hover:text-paper"
-              }`}
-            >
-              {w.label}
-            </button>
-          ))}
+    <div className="fixed inset-0 z-[100] flex items-start justify-center pt-24 pb-4 px-4 bg-ink/60 backdrop-blur-sm" onClick={() => setCommandPaletteOpen(false)}>
+      <div className="w-full max-w-2xl bg-white rounded-xl shadow-2xl overflow-hidden border border-line flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center px-4 border-b border-line bg-paperDim/30">
+          <Search size={18} className="text-slate flex-shrink-0" />
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search contacts, deals, or accounts..."
+            className="w-full bg-transparent border-none outline-none px-4 py-4 text-ink font-body placeholder:text-slate"
+          />
+          <button onClick={() => setCommandPaletteOpen(false)} className="p-1 text-slate hover:text-ink transition-colors rounded">
+            <X size={16} />
+          </button>
         </div>
-      </div>
-
-      <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto">
-        {nav.map((item) => {
-          const active = pathname === item.href;
-          const Icon = item.icon;
-          return (
-            <Link
-              key={item.key}
-              href={item.href}
-              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm relative transition-colors font-body ${
-                active ? "text-paper bg-inkSoft" : "text-slate bg-transparent hover:text-paper hover:bg-inkSoft/50"
-              }`}
-            >
-              {active && <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-berry" />}
-              <Icon size={16} />
-              {item.label}
-            </Link>
-          );
-        })}
-      </nav>
-
-      <div className="px-3 pb-4 space-y-0.5">
-        <Link
-          href="/settings/integrations"
-          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors font-body ${
-            pathname === "/settings/integrations" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
-          }`}
-        >
-          <Blocks size={16} />
-          Integrations & Auto
-        </Link>
-        <Link
-          href="/settings/team"
-          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors font-body ${
-            pathname === "/settings/team" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
-          }`}
-        >
-          <Settings size={16} />
-          Settings & Team
-        </Link>
-      </div>
-
-      <div className="p-4 flex items-center gap-2.5 border-t border-inkSoft">
-        <Avatar name="Pyrexx Admin" size={30} />
-        <div className="text-xs font-body">
-          <div className="text-paper font-medium">Pyrexx Admin</div>
-          <div className="text-slate">Owner</div>
+        <div className="max-h-[60vh] overflow-y-auto p-2">
+          {query.trim() === "" ? (
+            <div className="p-8 text-center text-sm text-slate font-body">Start typing to search globally...</div>
+          ) : results.length > 0 ? (
+            <div className="space-y-1">
+              {results.map((r, i) => (
+                <button
+                  key={`${r.type}-${r.id}-${i}`}
+                  onClick={() => handleSelect(r)}
+                  className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-paperDim transition-colors text-left group"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-white border border-line flex items-center justify-center text-slate group-hover:text-berry group-hover:border-berrySoft transition-colors">
+                      {r.type === "Contact" && <User size={14} />}
+                      {r.type === "Deal" && <Columns size={14} />}
+                      {r.type === "Account" && <Building2 size={14} />}
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium text-ink font-body">{r.title}</div>
+                      <div className="text-xs text-slate font-body">{r.subtitle}</div>
+                    </div>
+                  </div>
+                  <Badge variant="slate" className="opacity-60 group-hover:opacity-100">{r.type}</Badge>
+                </button>
+              ))}
+            </div>
+          ) : isLoading ? (
+             <div className="p-8 text-center text-sm text-slate font-body">Searching...</div>
+          ) : (
+             <div className="p-8 text-center text-sm text-slate font-body">No results found for "{query}"</div>
+          )}
         </div>
       </div>
     </div>
@@ -4601,46 +4289,317 @@ export class ResendProvider implements EmailProvider {
 }
 </file>
 
-<file path="src/store/useAppStore.ts">
-import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+<file path="src/middleware.ts">
+import { createServerClient, type CookieOptions } from '@supabase/ssr'
+import { NextResponse, type NextRequest } from 'next/server'
 
-type WorkspaceType = 'agency' | 'clinic';
+export async function middleware(request: NextRequest) {
+  let response = NextResponse.next({ request: { headers: request.headers } })
 
-interface AppState {
-  currentWorkspace: WorkspaceType;
-  activeOrgId: string | null;
-  userRole: string | null;
-  userId: string | null;
-  mobileMenuOpen: boolean;
-  setWorkspace: (ws: WorkspaceType) => void;
-  setActiveOrgId: (id: string | null) => void;
-  setUser: (id: string | null, role: string | null) => void;
-  setMobileMenuOpen: (open: boolean) => void;
-}
-
-export const useAppStore = create<AppState>()(
-  persist(
-    (set) => ({
-      currentWorkspace: 'agency',
-      activeOrgId: null,
-      userRole: null,
-      userId: null,
-      mobileMenuOpen: false,
-      setWorkspace: (ws) => set({ currentWorkspace: ws }),
-      setActiveOrgId: (id) => set({ activeOrgId: id }),
-      setUser: (id, role) => set({ userId: id, userRole: role }),
-      setMobileMenuOpen: (open) => set({ mobileMenuOpen: open }),
-    }),
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
-      name: 'pyrexx-crm-storage', // Saves to localStorage
-      partialize: (state) => ({ 
-        currentWorkspace: state.currentWorkspace,
-        activeOrgId: state.activeOrgId 
-      }), // Only persist workspace and org preferences
+      cookies: {
+        get(name: string) { return request.cookies.get(name)?.value },
+        set(name: string, value: string, options: CookieOptions) {
+          request.cookies.set({ name, value, ...options })
+          response = NextResponse.next({ request: { headers: request.headers } })
+          response.cookies.set({ name, value, ...options })
+        },
+        remove(name: string, options: CookieOptions) {
+          request.cookies.set({ name, value: '', ...options })
+          response = NextResponse.next({ request: { headers: request.headers } })
+          response.cookies.set({ name, value: '', ...options })
+        },
+      },
     }
   )
-);
+
+  const { data: { user } } = await supabase.auth.getUser()
+
+  const isAuthRoute = request.nextUrl.pathname.startsWith('/auth')
+  const isApiRoute = request.nextUrl.pathname.startsWith('/api')
+  const isUpdatePasswordRoute = request.nextUrl.pathname === '/auth/update-password'
+
+  // Block unauthenticated users
+  if (!user && !isAuthRoute && !isApiRoute) {
+    return NextResponse.redirect(new URL('/auth/login', request.url))
+  }
+
+  // Prevent authenticated users from going to login, BUT allow them to go to update-password
+  if (user && isAuthRoute && !isUpdatePasswordRoute) {
+    return NextResponse.redirect(new URL('/', request.url))
+  }
+
+  return response
+}
+
+export const config = {
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
+}
+</file>
+
+<file path="src/app/contacts/[id]/page.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { Avatar } from "@/components/ui/Avatar";
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { ChevronLeft, Mail, Phone, Building2, CheckCircle2, Circle, Edit3, Trash2, X, Save } from "lucide-react";
+import { createClient } from "@/lib/supabase";
+import { useParams, useRouter } from "next/navigation";
+import { useAppStore } from "@/store/useAppStore";
+import { toast, Toaster } from "sonner";
+
+export default function ContactDetailPage() {
+  const { id } = useParams();
+  const router = useRouter();
+  const supabase = createClient();
+  const { activeOrgId, userId, userRole } = useAppStore();
+  
+  const [contact, setContact] = useState<any>(null);
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [timeline, setTimeline] = useState<any[]>([]);
+  const [noteContent, setNoteContent] = useState("");
+  const [isSavingNote, setIsSavingNote] = useState(false);
+
+  // Edit Mode State
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState({ first_name: "", last_name: "", email: "", phone: "" });
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+
+  useEffect(() => {
+    if (activeOrgId && id) fetchData();
+  }, [activeOrgId, id]);
+
+  const fetchData = async () => {
+    const { data: contactData } = await supabase.from("contacts").select("*, deals(value)").eq("id", id).single();
+    
+    if (contactData) {
+      const dealValue = contactData.deals?.reduce((sum: number, d: any) => sum + Number(d.value), 0) || 0;
+      setContact({ ...contactData, total_value: dealValue });
+      setEditForm({
+        first_name: contactData.first_name || "",
+        last_name: contactData.last_name || "",
+        email: contactData.email || "",
+        phone: contactData.phone || ""
+      });
+    } else {
+      toast.error("Contact not found");
+      router.push("/contacts");
+    }
+
+    const { data: tasksData } = await supabase.from("tasks").select("*").eq("contact_id", id).eq("is_completed", false).order("due_date", { ascending: true });
+    if (tasksData) setTasks(tasksData);
+
+    const { data: activities } = await supabase.from("activities").select("*, users(full_name)").eq("contact_id", id);
+    let mergedTimeline = (activities || []).map(a => ({
+      id: a.id,
+      date: new Date(a.created_at),
+      type: a.type, 
+      content: a.content,
+      actor: a.users?.full_name || "System"
+    }));
+
+    mergedTimeline.sort((a, b) => b.date.getTime() - a.date.getTime());
+    setTimeline(mergedTimeline);
+  };
+
+  const handleSaveEdit = async () => {
+    setIsSavingEdit(true);
+    const { error } = await supabase.from("contacts").update({
+      first_name: editForm.first_name,
+      last_name: editForm.last_name,
+      email: editForm.email,
+      phone: editForm.phone,
+      updated_at: new Date().toISOString()
+    }).eq("id", id);
+
+    setIsSavingEdit(false);
+    if (error) {
+      toast.error("Failed to update contact");
+    } else {
+      toast.success("Contact updated!");
+      setIsEditing(false);
+      fetchData();
+    }
+  };
+
+  const handleDeleteContact = async () => {
+    if (!window.confirm("Are you sure you want to delete this contact? This will permanently delete all their deals, tasks, and history.")) return;
+    
+    const { error } = await supabase.from("contacts").delete().eq("id", id);
+    if (error) {
+      toast.error("Failed to delete contact");
+    } else {
+      toast.success("Contact deleted");
+      router.push("/contacts");
+    }
+  };
+
+  const handleSaveNote = async () => {
+    if (!noteContent.trim() || !activeOrgId || !userId) return;
+    setIsSavingNote(true);
+    const { error } = await supabase.from("activities").insert({ org_id: activeOrgId, contact_id: id, actor_id: userId, type: "note", content: noteContent });
+    setIsSavingNote(false);
+    if (error) toast.error("Failed to save note");
+    else { toast.success("Note added"); setNoteContent(""); fetchData(); }
+  };
+
+  const toggleTask = async (taskId: string) => {
+    setTasks(prev => prev.filter(t => t.id !== taskId)); 
+    await supabase.from("tasks").update({ is_completed: true }).eq("id", taskId);
+    toast.success("Task completed");
+  };
+
+  const handleEmailClick = async () => {
+    if (!activeOrgId || !contact?.id) return;
+    const { data: existingThread } = await supabase.from("threads").select("id").eq("org_id", activeOrgId).eq("contact_id", contact.id).eq("channel", "email").single();
+    if (existingThread) {
+      router.push(`/inbox?threadId=${existingThread.id}`);
+    } else {
+      const { data: newThread, error } = await supabase.from("threads").insert({ org_id: activeOrgId, contact_id: contact.id, channel: "email", subject: `Conversation with ${contact.first_name}` }).select("id").single();
+      if (!error && newThread) router.push(`/inbox?threadId=${newThread.id}`);
+    }
+  };
+
+  if (!contact) return (
+    <AppLayout><div className="h-full flex items-center justify-center"><div className="animate-spin w-6 h-6 border-2 border-berry border-t-transparent rounded-full" /></div></AppLayout>
+  );
+
+  return (
+    <AppLayout>
+      <div className="p-4 md:p-8 max-w-5xl mx-auto">
+        <button onClick={() => router.push('/contacts')} className="flex items-center gap-1 text-sm mb-6 text-slate font-body hover:text-ink transition-colors">
+          <ChevronLeft size={15} /> Back to Contacts
+        </button>
+
+        <div className="flex items-start gap-4 mb-8 flex-wrap justify-between">
+          <div className="flex items-start gap-4 flex-1 min-w-[250px]">
+            <Avatar name={`${contact.first_name} ${contact.last_name}`} size={64} />
+            <div className="flex-1">
+              {isEditing ? (
+                <div className="flex gap-2 mb-2">
+                  <input value={editForm.first_name} onChange={e => setEditForm({...editForm, first_name: e.target.value})} className="font-display text-[32px] text-ink leading-tight w-full bg-paperDim border border-line rounded px-2 outline-none focus:border-berry" placeholder="First Name" />
+                  <input value={editForm.last_name} onChange={e => setEditForm({...editForm, last_name: e.target.value})} className="font-display text-[32px] text-ink leading-tight w-full bg-paperDim border border-line rounded px-2 outline-none focus:border-berry" placeholder="Last Name" />
+                </div>
+              ) : (
+                <h1 className="font-display text-[32px] text-ink leading-tight">{contact.first_name} {contact.last_name}</h1>
+              )}
+              <div className="flex items-center gap-2 mt-2 flex-wrap">
+                <Badge variant="slate">{contact.stage}</Badge>
+                {contact.type === 'patient' && <Badge variant="sage">Patient</Badge>}
+              </div>
+            </div>
+          </div>
+          
+          <div className="flex gap-2 items-center">
+            {isEditing ? (
+              <>
+                <Button variant="ghost" onClick={() => setIsEditing(false)}><X size={16} /> Cancel</Button>
+                <Button onClick={handleSaveEdit} disabled={isSavingEdit}>{isSavingEdit ? "Saving..." : <><Save size={16} /> Save</>}</Button>
+              </>
+            ) : (
+              <>
+                {(userRole === 'owner' || userRole === 'manager') && (
+                  <button onClick={handleDeleteContact} className="p-2 text-slate hover:text-berry transition-colors rounded-lg hover:bg-berrySoft/50" title="Delete Contact">
+                    <Trash2 size={18} />
+                  </button>
+                )}
+                <Button variant="outline" icon={Edit3} onClick={() => setIsEditing(true)}>Edit</Button>
+                <Button variant="outline" icon={Phone}>Call</Button>
+                <Button variant="outline" icon={Mail} onClick={handleEmailClick}>Email</Button>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+          <div className="md:col-span-2 space-y-6">
+            <div className="rounded-xl p-5 bg-white border border-line shadow-sm">
+              <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Contact Details</div>
+              <div className="space-y-3">
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-slate font-body">Email</span>
+                  {isEditing ? (
+                    <input value={editForm.email} onChange={e => setEditForm({...editForm, email: e.target.value})} className="bg-paperDim border border-line rounded px-2 py-1 outline-none focus:border-berry text-right w-2/3" />
+                  ) : (
+                    <span className="text-ink font-body font-medium">{contact.email || "—"}</span>
+                  )}
+                </div>
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-slate font-body">Phone</span>
+                  {isEditing ? (
+                    <input value={editForm.phone} onChange={e => setEditForm({...editForm, phone: e.target.value})} className="bg-paperDim border border-line rounded px-2 py-1 outline-none focus:border-berry text-right font-mono w-2/3" />
+                  ) : (
+                    <span className="text-ink font-mono font-medium">{contact.phone || "—"}</span>
+                  )}
+                </div>
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-slate font-body">Total Pipeline Value</span>
+                  <span className="text-ink font-mono font-medium text-sage">${contact.total_value.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl p-5 bg-white border border-line shadow-sm">
+              <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Open Tasks</div>
+              {tasks.length === 0 ? (
+                <div className="text-sm text-slate font-body">No open tasks.</div>
+              ) : (
+                <div className="space-y-3">
+                  {tasks.map(t => (
+                    <div key={t.id} className="flex items-start gap-2.5">
+                      <button onClick={() => toggleTask(t.id)} className="mt-0.5 text-slate hover:text-sage transition-colors"><Circle size={15} /></button>
+                      <div>
+                        <div className="text-sm text-ink font-body font-medium leading-tight">{t.title}</div>
+                        <div className="text-[10px] text-berry font-mono mt-0.5">Due: {new Date(t.due_date).toLocaleDateString()}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="md:col-span-3 flex flex-col h-full">
+            <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Activity Timeline</div>
+            <div className="rounded-xl p-4 bg-white border border-line shadow-sm mb-6 flex flex-col gap-3">
+              <textarea value={noteContent} onChange={(e) => setNoteContent(e.target.value)} placeholder="Log a note..." className="w-full text-sm outline-none resize-none font-body text-ink placeholder:text-slate bg-transparent h-16" />
+              <div className="flex justify-between items-center border-t border-line pt-3">
+                <div className="flex gap-2 text-slate"><button className="hover:text-ink"><Edit3 size={15} /></button></div>
+                <Button onClick={handleSaveNote} disabled={isSavingNote || !noteContent.trim()}>{isSavingNote ? "Saving..." : "Save Note"}</Button>
+              </div>
+            </div>
+
+            <div className="relative pl-6 flex-1">
+              <div className="absolute left-[11px] top-2 bottom-0 w-px bg-line" />
+              {timeline.map((item, idx) => (
+                <div key={idx} className="relative mb-6">
+                  <div className="absolute -left-6 top-1 w-5 h-5 rounded-full flex items-center justify-center bg-paperDim border border-line z-10">
+                    {item.type === 'note' ? <Edit3 size={10} className="text-slate" /> : <CheckCircle2 size={10} className="text-berry" />}
+                  </div>
+                  <div className="rounded-xl p-4 bg-white border border-line shadow-sm">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-sm font-medium text-ink font-body">{item.type === 'note' ? `${item.actor} left a note` : "Stage Change"}</span>
+                      <span className="text-[10px] text-slate font-mono">{item.date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
+                    </div>
+                    <div className="text-sm text-ink600 font-body whitespace-pre-wrap leading-relaxed">{item.content}</div>
+                  </div>
+                </div>
+              ))}
+              {timeline.length === 0 && <div className="text-sm text-slate font-body ml-2">No activity recorded yet.</div>}
+            </div>
+          </div>
+        </div>
+      </div>
+      <Toaster position="top-right" richColors />
+    </AppLayout>
+  );
+}
 </file>
 
 <file path="src/app/inbox/page.tsx">
@@ -4775,6 +4734,586 @@ export default function InboxPage() {
     </AppLayout>
   );
 }
+</file>
+
+<file path="src/app/tasks/page.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { SectionTitle } from "@/components/ui/SectionTitle";
+import { Button } from "@/components/ui/Button";
+import { Plus, CheckCircle2, Circle, Trash2 } from "lucide-react";
+import { useAppStore } from "@/store/useAppStore";
+import { createClient } from "@/lib/supabase";
+import { TaskFormModal } from "@/components/features/tasks/TaskFormModal";
+import { Toaster, toast } from "sonner";
+
+export default function TasksPage() {
+  const { currentWorkspace, activeOrgId, userId } = useAppStore();
+  const supabase = createClient();
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
+  const fetchTasks = async () => {
+    if (!activeOrgId || !userId) return;
+    const { data, error } = await supabase.from("tasks").select("*, contacts(first_name, last_name)").eq("org_id", activeOrgId).order("due_date", { ascending: true });
+    if (!error && data) setTasks(data);
+  };
+
+  useEffect(() => { fetchTasks(); }, [activeOrgId, userId]);
+
+  const toggleTask = async (taskId: string, currentStatus: boolean) => {
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, is_completed: !currentStatus } : t));
+    const { error } = await supabase.from("tasks").update({ is_completed: !currentStatus }).eq("id", taskId);
+    if (error) { toast.error("Failed to update task"); fetchTasks(); }
+  };
+
+  const deleteTask = async (taskId: string) => {
+    if (!window.confirm("Delete this task?")) return;
+    setTasks(prev => prev.filter(t => t.id !== taskId));
+    const { error } = await supabase.from("tasks").delete().eq("id", taskId);
+    if (error) { toast.error("Failed to delete"); fetchTasks(); }
+    else toast.success("Task deleted");
+  };
+
+  const todayStr = new Date().toISOString().split("T")[0];
+  const categorizedTasks = {
+    "Overdue": tasks.filter(t => !t.is_completed && t.due_date < todayStr),
+    "Today": tasks.filter(t => !t.is_completed && t.due_date === todayStr),
+    "Upcoming": tasks.filter(t => !t.is_completed && t.due_date > todayStr),
+    "Completed": tasks.filter(t => t.is_completed)
+  };
+
+  return (
+    <AppLayout>
+      <div className="p-4 md:p-8 max-w-3xl mx-auto">
+        <SectionTitle eyebrow={currentWorkspace === "agency" ? "Agency Workspace" : "Clinic Workspace"} title="Tasks" action={<Button icon={Plus} onClick={() => setIsModalOpen(true)}>New Task</Button>} />
+        
+        {Object.entries(categorizedTasks).map(([group, items]) => {
+          if (items.length === 0) return null;
+          return (
+            <div key={group} className="mb-8">
+              <div className={`text-xs uppercase mb-2 tracking-[0.06em] font-body font-medium ${group === "Overdue" ? "text-berry" : "text-slate"}`}>
+                {group} <span className="ml-1 opacity-60">({items.length})</span>
+              </div>
+              <div className="rounded-xl overflow-hidden border border-line bg-white shadow-card">
+                {items.map((t) => (
+                  <div key={t.id} className="flex items-center gap-3 px-4 py-3 border-b border-line last:border-0 hover:bg-paperDim/30 transition-colors group">
+                    <button onClick={() => toggleTask(t.id, t.is_completed)}>
+                      {t.is_completed ? <CheckCircle2 size={18} className="text-sage" /> : <Circle size={18} className="text-slate hover:text-sage transition-colors" />}
+                    </button>
+                    <div className="flex-1">
+                      <div className={`text-sm font-body font-medium ${t.is_completed ? "text-slate line-through" : "text-ink"}`}>{t.title}</div>
+                      <div className="text-xs text-slate font-body mt-0.5">
+                        {t.contacts?.first_name} {t.contacts?.last_name}
+                        {group !== "Today" && group !== "Completed" && ` • Due: ${new Date(t.due_date).toLocaleDateString()}`}
+                      </div>
+                    </div>
+                    <button onClick={() => deleteTask(t.id)} className="text-slate hover:text-berry opacity-0 group-hover:opacity-100 transition-opacity p-2">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+        {tasks.length === 0 && <div className="p-8 text-center text-slate font-body bg-white border border-line rounded-xl shadow-card">No tasks found.</div>}
+      </div>
+      <TaskFormModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onSuccess={fetchTasks} />
+      <Toaster position="top-right" richColors />
+    </AppLayout>
+  );
+}
+</file>
+
+<file path="src/components/features/pipeline/PipelineBoard.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { DndContext, DragEndEvent, closestCorners } from "@dnd-kit/core";
+import { PipelineColumn } from "./PipelineColumn";
+import { createClient } from "@/lib/supabase";
+import { useAppStore } from "@/store/useAppStore";
+import { SectionTitle } from "@/components/ui/SectionTitle";
+import { Button } from "@/components/ui/Button";
+import { Plus } from "lucide-react";
+import { DealFormModal } from "./DealFormModal";
+import { NextActionModal } from "./NextActionModal";
+import { EditDealModal } from "./EditDealModal";
+
+const STAGES = ["New Lead", "Demo Scheduled", "Proposal Sent", "Contract Sent", "Onboarding", "Active Client"];
+
+export function PipelineBoard() {
+  const supabase = createClient();
+  const { activeOrgId, currentWorkspace } = useAppStore();
+  const [deals, setDeals] = useState<any[]>([]);
+  const [isDealModalOpen, setIsDealModalOpen] = useState(false);
+  const [editingDeal, setEditingDeal] = useState<any | null>(null);
+  const [pendingMove, setPendingMove] = useState<{ dealId: string, contactId: string, newStage: string, prevStage: string } | null>(null);
+
+  const fetchDeals = async () => {
+    if (!activeOrgId) return;
+    const { data, error } = await supabase
+      .from("deals")
+      .select(`*, contacts (first_name, last_name)`)
+      .eq("org_id", activeOrgId)
+      .order("updated_at", { ascending: false }); // Important for Infinite Kanban logic
+      
+    if (!error && data) setDeals(data);
+  };
+
+  useEffect(() => { fetchDeals(); }, [activeOrgId]);
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over) return;
+
+    const dealId = active.id as string;
+    const dealData = active.data.current?.deal;
+    const currentStage = dealData.stage;
+    const newStage = over.id as string;
+
+    if (currentStage === newStage) return;
+
+    setDeals(prev => prev.map(d => d.id === dealId ? { ...d, stage: newStage } : d));
+    setPendingMove({ dealId, contactId: dealData.contact_id, newStage, prevStage: currentStage });
+  };
+
+  const handleCancelMove = () => {
+    if (pendingMove) {
+      setDeals(prev => prev.map(d => d.id === pendingMove.dealId ? { ...d, stage: pendingMove.prevStage } : d));
+      setPendingMove(null);
+    }
+  };
+
+  const handleConfirmMove = () => {
+    setPendingMove(null);
+    fetchDeals();
+  };
+
+  const openValue = deals.filter(d => d.stage !== "Active Client").reduce((sum, d) => sum + Number(d.value), 0);
+
+  return (
+    <div className="flex flex-col h-full w-full">
+      <div className="flex-shrink-0 px-4 md:px-8 pt-4 md:pt-8">
+        <SectionTitle 
+          eyebrow={currentWorkspace === "agency" ? "Agency Workspace" : "Clinic Workspace"}
+          title="Pipeline" 
+          action={
+            <div className="flex items-center gap-4">
+              <span className="hidden sm:inline-block text-sm text-slate font-mono font-medium bg-paperDim px-3 py-1.5 rounded-lg border border-line">
+                Pipeline Value: <span className="text-ink">${openValue.toLocaleString()}</span>
+              </span>
+              <Button icon={Plus} onClick={() => setIsDealModalOpen(true)}>New Deal</Button>
+            </div>
+          } 
+        />
+      </div>
+
+      <div className="flex-1 overflow-x-auto overflow-y-hidden px-4 md:px-8 pb-4">
+        <div className="flex gap-4 md:gap-6 h-full snap-x snap-mandatory md:snap-none w-max">
+          <DndContext collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
+            {STAGES.map((stage) => {
+              // The "Infinite Kanban" Fix
+              let stageDeals = deals.filter(d => d.stage === stage);
+              let hiddenCount = 0;
+              
+              if (stage === "Active Client" && stageDeals.length > 15) {
+                hiddenCount = stageDeals.length - 15;
+                stageDeals = stageDeals.slice(0, 15);
+              }
+
+              return (
+                <PipelineColumn 
+                  key={stage} 
+                  stage={stage} 
+                  deals={stageDeals} 
+                  onDealClick={(d) => setEditingDeal(d)}
+                  hiddenCount={hiddenCount}
+                />
+              );
+            })}
+          </DndContext>
+        </div>
+      </div>
+
+      <DealFormModal isOpen={isDealModalOpen} onClose={() => setIsDealModalOpen(false)} onSuccess={fetchDeals} />
+      <EditDealModal isOpen={!!editingDeal} deal={editingDeal} onClose={() => setEditingDeal(null)} onSuccess={fetchDeals} />
+      
+      {pendingMove && (
+        <NextActionModal isOpen={true} dealId={pendingMove.dealId} contactId={pendingMove.contactId} newStage={pendingMove.newStage} onCancel={handleCancelMove} onSuccess={handleConfirmMove} />
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/layout/MobileDrawer.tsx">
+"use client";
+import React, { useEffect } from "react";
+import { useAppStore } from "@/store/useAppStore";
+import { PulseTrace } from "@/components/ui/PulseTrace";
+import { Avatar } from "@/components/ui/Avatar";
+import { X } from "lucide-react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { 
+  LayoutDashboard, Users, Columns, Inbox, CheckSquare, 
+  BarChart3, PhoneOutgoing, Building2, Phone, Settings, Blocks
+} from "lucide-react";
+
+const AGENCY_NAV = [
+  { key: "dashboard", label: "Dashboard", href: "/", icon: LayoutDashboard },
+  { key: "contacts", label: "Contacts", href: "/contacts", icon: Users },
+  { key: "pipeline", label: "Pipeline", href: "/pipeline", icon: Columns },
+  { key: "inbox", label: "Inbox", href: "/inbox", icon: Inbox },
+  { key: "tasks", label: "Tasks", href: "/tasks", icon: CheckSquare },
+  { key: "dialer", label: "Dialer", href: "/dialer", icon: PhoneOutgoing },
+  { key: "accounts", label: "Accounts", href: "/accounts", icon: Building2 },
+  { key: "reports", label: "Reports", href: "/reports", icon: BarChart3 },
+];
+
+const CLINIC_NAV = [
+  { key: "clinicDashboard", label: "Dashboard", href: "/", icon: LayoutDashboard },
+  { key: "patients", label: "Patients", href: "/contacts", icon: Users },
+  { key: "calls", label: "Calls", href: "/calls", icon: Phone },
+  { key: "inbox", label: "Inbox", href: "/inbox", icon: Inbox },
+  { key: "dialer", label: "Dialer", href: "/dialer", icon: PhoneOutgoing },
+  { key: "reports", label: "Reports", href: "/reports", icon: BarChart3 },
+];
+
+export function MobileDrawer() {
+  const { 
+    mobileMenuOpen, setMobileMenuOpen, 
+    currentWorkspace, activeOrgId, workspaces, 
+    setWorkspace, setActiveOrgId 
+  } = useAppStore();
+  const pathname = usePathname();
+  const nav = currentWorkspace === "agency" ? AGENCY_NAV : CLINIC_NAV;
+
+  useEffect(() => {
+    if (mobileMenuOpen) document.body.style.overflow = 'hidden';
+    else document.body.style.overflow = 'unset';
+    return () => { document.body.style.overflow = 'unset'; };
+  }, [mobileMenuOpen]);
+
+  if (!mobileMenuOpen) return null;
+
+  const handleWorkspaceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const selectedOrgId = e.target.value;
+    const targetWorkspace = workspaces.find((w) => w.id === selectedOrgId);
+    
+    if (targetWorkspace) {
+      setActiveOrgId(targetWorkspace.id);
+      setWorkspace(targetWorkspace.type);
+      window.location.href = "/";
+    }
+  };
+
+  const agencyWorkspaces = workspaces.filter(w => w.type === 'agency');
+  const clinicWorkspaces = workspaces.filter(w => w.type === 'clinic');
+
+  return (
+    <div className="md:hidden fixed inset-0 z-50 flex flex-col bg-ink">
+      <div className="flex items-center justify-between px-5 pt-6 pb-4">
+        <div className="flex items-center gap-2">
+          <PulseTrace sentiment="positive" size="sm" />
+          <span className="font-body font-bold text-paper text-[15px]">Pyrexx CRM</span>
+        </div>
+        <button onClick={() => setMobileMenuOpen(false)}>
+          <X size={20} className="text-paper" />
+        </button>
+      </div>
+
+      <div className="px-4 mb-5">
+        <div className="relative w-full">
+          <select
+            value={activeOrgId || ""}
+            onChange={handleWorkspaceChange}
+            className="w-full appearance-none bg-inkSoft text-paper text-sm py-3 px-4 pr-8 rounded-lg outline-none focus:ring-2 focus:ring-berry transition-all font-body cursor-pointer border border-transparent hover:border-slate/30"
+          >
+            {agencyWorkspaces.length > 0 && (
+              <optgroup label="Agency">
+                {agencyWorkspaces.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name}</option>
+                ))}
+              </optgroup>
+            )}
+            
+            {clinicWorkspaces.length > 0 && (
+              <optgroup label="Client Clinics">
+                {clinicWorkspaces.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+          <div className="absolute inset-y-0 right-0 flex items-center px-4 pointer-events-none text-slate">
+            <svg className="w-5 h-5 fill-current" viewBox="0 0 20 20">
+              <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex-1 px-3 space-y-0.5 overflow-y-auto">
+        {nav.map((item) => {
+          const Icon = item.icon;
+          const active = pathname === item.href;
+          return (
+            <Link
+              key={item.key}
+              href={item.href}
+              onClick={() => setMobileMenuOpen(false)}
+              className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${
+                active ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
+              }`}
+            >
+              <Icon size={18} /> {item.label}
+            </Link>
+          );
+        })}
+        
+        <div className="my-2 border-t border-inkSoft/50 pt-2" />
+        
+        <Link
+          href="/settings/integrations"
+          onClick={() => setMobileMenuOpen(false)}
+          className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${
+            pathname === "/settings/integrations" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
+          }`}
+        >
+          <Blocks size={18} /> Integrations & Auto
+        </Link>
+        <Link
+          href="/settings/team"
+          onClick={() => setMobileMenuOpen(false)}
+          className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${
+            pathname === "/settings/team" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
+          }`}
+        >
+          <Settings size={18} /> Settings & Team
+        </Link>
+      </div>
+
+      <div className="p-4 flex items-center gap-2.5 border-t border-inkSoft pb-safe">
+        <Avatar name="Pyrexx Admin" size={30} />
+        <div className="text-xs font-body">
+          <div className="text-paper">Pyrexx Admin</div>
+          <div className="text-slate">Active Session</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/layout/Sidebar.tsx">
+"use client";
+import React from "react";
+import { useAppStore } from "@/store/useAppStore";
+import { PulseTrace } from "@/components/ui/PulseTrace";
+import { Avatar } from "@/components/ui/Avatar";
+import { 
+  LayoutDashboard, Users, Columns, Inbox, CheckSquare, 
+  BarChart3, PhoneOutgoing, Building2, Phone, Settings, Blocks
+} from "lucide-react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+
+const AGENCY_NAV = [
+  { key: "dashboard", label: "Dashboard", href: "/", icon: LayoutDashboard },
+  { key: "contacts", label: "Contacts", href: "/contacts", icon: Users },
+  { key: "pipeline", label: "Pipeline", href: "/pipeline", icon: Columns },
+  { key: "inbox", label: "Inbox", href: "/inbox", icon: Inbox },
+  { key: "tasks", label: "Tasks", href: "/tasks", icon: CheckSquare },
+  { key: "dialer", label: "Dialer", href: "/dialer", icon: PhoneOutgoing },
+  { key: "accounts", label: "Accounts", href: "/accounts", icon: Building2 },
+  { key: "reports", label: "Reports", href: "/reports", icon: BarChart3 },
+];
+
+const CLINIC_NAV = [
+  { key: "clinicDashboard", label: "Dashboard", href: "/", icon: LayoutDashboard },
+  { key: "patients", label: "Patients", href: "/contacts", icon: Users },
+  { key: "calls", label: "Calls", href: "/calls", icon: Phone },
+  { key: "inbox", label: "Inbox", href: "/inbox", icon: Inbox },
+  { key: "dialer", label: "Dialer", href: "/dialer", icon: PhoneOutgoing },
+  { key: "reports", label: "Reports", href: "/reports", icon: BarChart3 },
+];
+
+export function Sidebar() {
+  const { currentWorkspace, activeOrgId, workspaces, setWorkspace, setActiveOrgId } = useAppStore();
+  const pathname = usePathname();
+  const nav = currentWorkspace === "agency" ? AGENCY_NAV : CLINIC_NAV;
+
+  const handleWorkspaceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const selectedOrgId = e.target.value;
+    const targetWorkspace = workspaces.find((w) => w.id === selectedOrgId);
+    
+    if (targetWorkspace) {
+      setActiveOrgId(targetWorkspace.id);
+      setWorkspace(targetWorkspace.type);
+      // We force a hard reload here to ensure all data and roles re-fetch cleanly 
+      // into the new environment context.
+      window.location.href = "/"; 
+    }
+  };
+
+  const agencyWorkspaces = workspaces.filter(w => w.type === 'agency');
+  const clinicWorkspaces = workspaces.filter(w => w.type === 'clinic');
+
+  return (
+    <div className="hidden md:flex w-60 flex-shrink-0 flex-col h-full bg-ink z-20">
+      <div className="px-5 pt-6 pb-5 flex items-center gap-2">
+        <PulseTrace sentiment="positive" size="sm" />
+        <span className="font-body font-bold text-paper text-[15px]">Pyrexx</span>
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-inkSoft text-slate font-mono">CRM</span>
+      </div>
+
+      <div className="px-4 mb-5">
+        <div className="relative w-full">
+          <select
+            value={activeOrgId || ""}
+            onChange={handleWorkspaceChange}
+            className="w-full appearance-none bg-inkSoft text-paper text-sm py-2 px-3 pr-8 rounded-md outline-none focus:ring-2 focus:ring-berry transition-all font-body cursor-pointer border border-transparent hover:border-slate/30"
+          >
+            {agencyWorkspaces.length > 0 && (
+              <optgroup label="Agency">
+                {agencyWorkspaces.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name}</option>
+                ))}
+              </optgroup>
+            )}
+            
+            {clinicWorkspaces.length > 0 && (
+              <optgroup label="Client Clinics">
+                {clinicWorkspaces.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+          <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-slate">
+            <svg className="w-4 h-4 fill-current" viewBox="0 0 20 20">
+              <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto">
+        {nav.map((item) => {
+          const active = pathname === item.href;
+          const Icon = item.icon;
+          return (
+            <Link
+              key={item.key}
+              href={item.href}
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm relative transition-colors font-body ${
+                active ? "text-paper bg-inkSoft" : "text-slate bg-transparent hover:text-paper hover:bg-inkSoft/50"
+              }`}
+            >
+              {active && <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-berry" />}
+              <Icon size={16} />
+              {item.label}
+            </Link>
+          );
+        })}
+      </nav>
+
+      <div className="px-3 pb-4 space-y-0.5">
+        <Link
+          href="/settings/integrations"
+          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors font-body ${
+            pathname === "/settings/integrations" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
+          }`}
+        >
+          <Blocks size={16} />
+          Integrations & Auto
+        </Link>
+        <Link
+          href="/settings/team"
+          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors font-body ${
+            pathname === "/settings/team" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
+          }`}
+        >
+          <Settings size={16} />
+          Settings & Team
+        </Link>
+      </div>
+
+      <div className="p-4 flex items-center gap-2.5 border-t border-inkSoft">
+        <Avatar name="Pyrexx Admin" size={30} />
+        <div className="text-xs font-body">
+          <div className="text-paper font-medium">Pyrexx Admin</div>
+          <div className="text-slate">Active Session</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/store/useAppStore.ts">
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+
+type WorkspaceType = 'agency' | 'clinic';
+
+export interface Workspace {
+  id: string;
+  name: string;
+  type: WorkspaceType;
+}
+
+interface AppState {
+  currentWorkspace: WorkspaceType;
+  activeOrgId: string | null;
+  userRole: string | null;
+  userId: string | null;
+  workspaces: Workspace[];
+  mobileMenuOpen: boolean;
+  commandPaletteOpen: boolean;
+  
+  setWorkspace: (ws: WorkspaceType) => void;
+  setActiveOrgId: (id: string | null) => void;
+  setUser: (id: string | null, role: string | null) => void;
+  setWorkspaces: (workspaces: Workspace[]) => void;
+  setMobileMenuOpen: (open: boolean) => void;
+  setCommandPaletteOpen: (open: boolean) => void;
+}
+
+export const useAppStore = create<AppState>()(
+  persist(
+    (set) => ({
+      currentWorkspace: 'agency',
+      activeOrgId: null,
+      userRole: null,
+      userId: null,
+      workspaces: [],
+      mobileMenuOpen: false,
+      commandPaletteOpen: false,
+      
+      setWorkspace: (ws) => set({ currentWorkspace: ws }),
+      setActiveOrgId: (id) => set({ activeOrgId: id }),
+      setUser: (id, role) => set({ userId: id, userRole: role }),
+      setWorkspaces: (workspaces) => set({ workspaces }),
+      setMobileMenuOpen: (open) => set({ mobileMenuOpen: open }),
+      setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
+    }),
+    {
+      name: 'pyrexx-crm-storage',
+      partialize: (state) => ({ 
+        currentWorkspace: state.currentWorkspace,
+        activeOrgId: state.activeOrgId,
+        userRole: state.userRole,
+        userId: state.userId
+      }), 
+      // Note: We do NOT persist the `workspaces` array. 
+      // We want to fetch it fresh on every load so if access is revoked, it updates instantly.
+    }
+  )
+);
 </file>
 
 <file path="tailwind.config.ts">

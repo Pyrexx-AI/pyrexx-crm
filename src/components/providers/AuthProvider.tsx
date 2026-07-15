@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const supabase = createClient();
   const router = useRouter();
-  const { activeOrgId, setActiveOrgId, setUser, setWorkspace, setWorkspaces } = useAppStore();
+  const { activeOrgId, setActiveOrgId, setUser, setUserName, setUserEmail, setWorkspace, setWorkspaces } = useAppStore();
   const [isBootstrapping, setIsBootstrapping] = useState(true);
 
   useEffect(() => {
@@ -19,6 +19,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
+      // Fetch the user's profile details
+      const { data: profile } = await supabase.from('users').select('full_name, email').eq('id', user.id).single();
+      if (profile) {
+        setUserName(profile.full_name);
+        setUserEmail(profile.email);
+      }
+
       const { data: memberships } = await supabase
         .from('memberships')
         .select('role, org_id, organizations(id, name, type)')
@@ -26,28 +33,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (memberships && memberships.length > 0) {
         const availableWorkspaces: Workspace[] = [];
-        
-        // FIX: Explicitly type this as 'any' so TypeScript doesn't lock it as 'null'
         let agencyMembership: any = null;
 
         memberships.forEach((m: any) => {
           const org = Array.isArray(m.organizations) ? m.organizations[0] : m.organizations;
           if (org) {
-            availableWorkspaces.push({
-              id: org.id,
-              name: org.name,
-              type: org.type as 'agency' | 'clinic'
-            });
-
-            if (org.type === 'agency') {
-              agencyMembership = m;
-            }
+            availableWorkspaces.push({ id: org.id, name: org.name, type: org.type as 'agency' | 'clinic' });
+            if (org.type === 'agency') agencyMembership = m;
           }
         });
 
         setWorkspaces(availableWorkspaces);
 
-        // FIX: Explicitly type 'm' as 'any' in the find method
         const currentMembership = memberships.find((m: any) => m.org_id === activeOrgId);
         
         if (currentMembership) {
@@ -79,13 +76,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (event === 'SIGNED_OUT') {
         setActiveOrgId(null);
         setUser(null, null);
+        setUserName(null);
+        setUserEmail(null);
         setWorkspaces([]);
         router.push('/auth/login');
       }
     });
 
     return () => subscription.unsubscribe();
-  }, [supabase, activeOrgId, setActiveOrgId, setUser, setWorkspace, setWorkspaces, router]);
+  }, [supabase, activeOrgId, setActiveOrgId, setUser, setUserName, setUserEmail, setWorkspace, setWorkspaces, router]);
 
   if (isBootstrapping) {
     return (

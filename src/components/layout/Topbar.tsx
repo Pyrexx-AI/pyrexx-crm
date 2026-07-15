@@ -86,7 +86,11 @@ export function Topbar() {
         {/* Avatar Dropdown */}
         <div className="relative" ref={profileRef}>
           <div onClick={() => setProfileOpen(!profileOpen)} className="cursor-pointer">
-            <Avatar name={userRole?.toUpperCase() || "Pyrexx"} size={28} className="hover:ring-2 hover:ring-berry hover:ring-offset-1 transition-all" />
+            <Avatar 
+              name={useAppStore(s => s.userName) || "User"} 
+              size={28} 
+              className="hover:ring-2 hover:ring-berry hover:ring-offset-1 transition-all" 
+            />
           </div>
           
           {profileOpen && (
