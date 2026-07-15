@@ -8,7 +8,7 @@ import {
   BarChart3, PhoneOutgoing, Building2, Phone, Settings, Blocks
 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 const AGENCY_NAV = [
   { key: "dashboard", label: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -31,7 +31,6 @@ const CLINIC_NAV = [
 ];
 
 export function Sidebar() {
-  // FIX: Extracting state directly ensures reactivity
   const currentWorkspace = useAppStore(s => s.currentWorkspace);
   const activeOrgId = useAppStore(s => s.activeOrgId);
   const workspaces = useAppStore(s => s.workspaces);
@@ -41,6 +40,7 @@ export function Sidebar() {
   const userRole = useAppStore(s => s.userRole) || "Role";
 
   const pathname = usePathname();
+  const router = useRouter();
   const nav = currentWorkspace === "agency" ? AGENCY_NAV : CLINIC_NAV;
 
   const handleWorkspaceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -50,7 +50,8 @@ export function Sidebar() {
     if (targetWorkspace) {
       setActiveOrgId(targetWorkspace.id);
       setWorkspace(targetWorkspace.type);
-      window.location.href = "/"; 
+      // FIX: Use soft navigation so Zustand has ample time to flush its writes to localStorage
+      router.push("/");
     }
   };
 

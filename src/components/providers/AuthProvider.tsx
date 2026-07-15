@@ -9,69 +9,113 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const supabase = createClient();
   const router = useRouter();
   
-  // Extract all setters
-  const { activeOrgId, setActiveOrgId, setUser, setUserName, setUserEmail, setWorkspace, setWorkspaces } = useAppStore();
+  const { 
+    activeOrgId, setActiveOrgId, 
+    currentWorkspace, setWorkspace, 
+    setUser, setUserName, setUserEmail, setWorkspaces 
+  } = useAppStore();
+  
   const [isBootstrapping, setIsBootstrapping] = useState(true);
 
   useEffect(() => {
     let isMounted = true;
 
     const bootstrap = async () => {
+      logger.info('AuthProvider', 'Starting bootstrap sequence...', { activeOrgId });
+      
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        
+        if (authError) {
+          logger.error('AuthProvider', 'Auth Error on getUser', authError);
+        }
         
         if (!user) {
           if (isMounted) setIsBootstrapping(false);
           return;
         }
 
-        // Fetch Profile
-        const { data: profile } = await supabase.from('users').select('full_name, email').eq('id', user.id).maybeSingle();
+        // Fetch User Profile
+        const { data: profile, error: profileError } = await supabase.from('users').select('full_name, email').eq('id', user.id).maybeSingle();
+        if (profileError) {
+          logger.error('AuthProvider', 'Failed to fetch user profile', profileError);
+        }
+        
         const fallbackName = user.email?.split('@')[0] || "User";
         setUserName(profile?.full_name || fallbackName);
         setUserEmail(profile?.email || user.email || "");
 
         // Fetch Memberships
-        const { data: memberships } = await supabase
+        const { data: memberships, error: membershipError } = await supabase
           .from('memberships')
           .select('role, org_id, organizations(id, name, type)')
           .eq('user_id', user.id);
 
+        if (membershipError) {
+          logger.error('AuthProvider', 'Failed to fetch memberships', membershipError);
+        }
+
         if (memberships && memberships.length > 0) {
           const availableWorkspaces: Workspace[] = [];
-          let targetOrgId = activeOrgId; // Default to what's in Zustand
-          let resolvedRole = null;
+          let agencyMembership: any = null;
 
           memberships.forEach((m: any) => {
             const org = Array.isArray(m.organizations) ? m.organizations[0] : m.organizations;
             if (org) {
-              availableWorkspaces.push({ id: org.id, name: org.name, type: org.type });
+              availableWorkspaces.push({ 
+                id: org.id, 
+                name: org.name, 
+                type: org.type as 'agency' | 'clinic' 
+              });
+              if (org.type === 'agency') agencyMembership = m;
             }
           });
 
           setWorkspaces(availableWorkspaces);
 
-          // If no activeOrgId in Zustand, or it's invalid, pick the first available
-          if (!targetOrgId || !availableWorkspaces.find(w => w.id === targetOrgId)) {
-            targetOrgId = availableWorkspaces[0].id;
-            setActiveOrgId(targetOrgId);
-            setWorkspace(availableWorkspaces[0].type);
+          // FIX: Read localStorage directly & synchronously. 
+          // This stops Next.js from triggering the fallback loop before Zustand has hydrated.
+          let savedOrgId = activeOrgId;
+          let savedWorkspace = currentWorkspace;
+
+          try {
+            const persistedData = localStorage.getItem('pyrexx-crm-storage');
+            if (persistedData) {
+              const parsed = JSON.parse(persistedData);
+              if (parsed?.state?.activeOrgId) {
+                savedOrgId = parsed.state.activeOrgId;
+                savedWorkspace = parsed.state.currentWorkspace;
+              }
+            }
+          } catch (storageError) {
+            logger.error('AuthProvider', 'Failed to parse localStorage', storageError);
           }
 
-          // Match the role exactly to the active Org
-          const currentMembership = memberships.find((m: any) => m.org_id === targetOrgId);
-          if (currentMembership) {
-            resolvedRole = currentMembership.role;
+          // Validate if the saved Org ID actually belongs to the user
+          const isSavedOrgValid = availableWorkspaces.find(w => w.id === savedOrgId);
+
+          if (isSavedOrgValid && savedOrgId) {
+            setActiveOrgId(savedOrgId);
+            setWorkspace(savedWorkspace);
+            
+            const currentMembership = memberships.find((m: any) => m.org_id === savedOrgId);
+            setUser(user.id, currentMembership?.role || 'rep');
+            logger.info('AuthProvider', 'Restored validated workspace from storage', { savedOrgId, savedWorkspace });
           } else {
-            resolvedRole = memberships[0].role;
+            // Safe fallback if nothing is saved or the saved workspace is invalid
+            const fallbackOrg = agencyMembership || memberships[0];
+            const fallbackType = fallbackOrg.organizations?.type || 'clinic';
+            
+            setActiveOrgId(fallbackOrg.org_id);
+            setWorkspace(fallbackType as 'agency' | 'clinic');
+            setUser(user.id, fallbackOrg.role);
+            logger.info('AuthProvider', 'Fallback workspace assigned', { orgId: fallbackOrg.org_id });
           }
-
-          setUser(user.id, resolvedRole);
         } else {
           setUser(user.id, null);
         }
-      } catch (error) {
-        logger.error('AuthProvider', 'Bootstrap failed', error);
+      } catch (err) {
+        logger.error('AuthProvider', 'Fatal error during bootstrap', err);
       } finally {
         if (isMounted) setIsBootstrapping(false);
       }
@@ -94,7 +138,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isMounted = false;
       subscription.unsubscribe();
     };
-  }, [supabase, activeOrgId, setActiveOrgId, setUser, setUserName, setUserEmail, setWorkspace, setWorkspaces, router]);
+  }, [supabase, activeOrgId, currentWorkspace, setActiveOrgId, setUser, setUserName, setUserEmail, setWorkspace, setWorkspaces, router]);
 
   if (isBootstrapping) {
     return (

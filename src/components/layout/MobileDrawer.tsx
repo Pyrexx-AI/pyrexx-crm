@@ -5,7 +5,7 @@ import { PulseTrace } from "@/components/ui/PulseTrace";
 import { Avatar } from "@/components/ui/Avatar";
 import { X } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { 
   LayoutDashboard, Users, Columns, Inbox, CheckSquare, 
   BarChart3, PhoneOutgoing, Building2, Phone, Settings, Blocks
@@ -37,7 +37,11 @@ export function MobileDrawer() {
     currentWorkspace, activeOrgId, workspaces, 
     setWorkspace, setActiveOrgId 
   } = useAppStore();
+  const userName = useAppStore(s => s.userName) || "User";
+  const userRole = useAppStore(s => s.userRole) || "Role";
+
   const pathname = usePathname();
+  const router = useRouter();
   const nav = currentWorkspace === "agency" ? AGENCY_NAV : CLINIC_NAV;
 
   useEffect(() => {
@@ -55,7 +59,9 @@ export function MobileDrawer() {
     if (targetWorkspace) {
       setActiveOrgId(targetWorkspace.id);
       setWorkspace(targetWorkspace.type);
-      window.location.href = "/";
+      setMobileMenuOpen(false);
+      // FIX: Use soft navigation here too
+      router.push("/");
     }
   };
 
@@ -146,10 +152,10 @@ export function MobileDrawer() {
       </div>
 
       <div className="p-4 flex items-center gap-2.5 border-t border-inkSoft pb-safe">
-        <Avatar name={useAppStore(s => s.userName) || "User"} size={30} />
+        <Avatar name={userName} size={30} />
         <div className="text-xs font-body truncate">
-          <div className="text-paper truncate">{useAppStore(s => s.userName) || "Pyrexx User"}</div>
-          <div className="text-slate capitalize">{useAppStore(s => s.userRole) || "Role"}</div>
+          <div className="text-paper truncate">{userName}</div>
+          <div className="text-slate capitalize truncate">{userRole}</div>
         </div>
       </div>
     </div>
