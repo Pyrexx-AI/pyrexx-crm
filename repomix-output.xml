@@ -992,124 +992,6 @@ export default function IntegrationsPage() {
 }
 </file>
 
-<file path="src/app/settings/profile/page.tsx">
-"use client";
-import React, { useState, useEffect } from "react";
-import { AppLayout } from "@/components/layout/AppLayout";
-import { SectionTitle } from "@/components/ui/SectionTitle";
-import { Input } from "@/components/ui/Input";
-import { Button } from "@/components/ui/Button";
-import { createClient } from "@/lib/supabase";
-import { toast, Toaster } from "sonner";
-import { useAppStore } from "@/store/useAppStore";
-
-export default function ProfileSettingsPage() {
-  const supabase = createClient();
-  const { userId } = useAppStore();
-  
-  const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [isSavingProfile, setIsSavingProfile] = useState(false);
-  const [isSavingAuth, setIsSavingAuth] = useState(false);
-
-  useEffect(() => {
-    if (userId) {
-      supabase.from("users").select("full_name, email").eq("id", userId).single().then(({ data }) => {
-        if (data) {
-          setFullName(data.full_name || "");
-          setEmail(data.email || "");
-        }
-      });
-    }
-  }, [userId, supabase]);
-
-  const handleUpdateProfile = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!userId) return;
-    setIsSavingProfile(true);
-
-    const { error } = await supabase.from("users").update({ full_name: fullName }).eq("id", userId);
-    
-    setIsSavingProfile(false);
-    if (error) toast.error("Failed to update profile.");
-    else toast.success("Profile updated successfully.");
-  };
-
-  const handleUpdateSecurity = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSavingAuth(true);
-
-    // Update Email and/or Password in Supabase Auth
-    const updates: any = {};
-    if (email) updates.email = email;
-    if (password) updates.password = password;
-
-    const { error } = await supabase.auth.updateUser(updates);
-
-    setIsSavingAuth(false);
-    if (error) {
-      toast.error("Security update failed", { description: error.message });
-    } else {
-      toast.success("Security credentials updated!");
-      setPassword(""); // Clear password field for safety
-    }
-  };
-
-  return (
-    <AppLayout>
-      <div className="p-4 md:p-8 max-w-3xl mx-auto flex-1">
-        <SectionTitle eyebrow="Settings" title="Personal Profile" />
-
-        <div className="space-y-6 mt-6">
-          {/* Public Profile Form */}
-          <div className="rounded-xl p-6 border border-line bg-white shadow-card">
-            <h2 className="text-lg font-medium text-ink font-body mb-4">Public Information</h2>
-            <form onSubmit={handleUpdateProfile} className="space-y-4 max-w-md">
-              <Input 
-                label="Full Name" 
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-              />
-              <Button type="submit" disabled={isSavingProfile}>
-                {isSavingProfile ? "Saving..." : "Save Profile"}
-              </Button>
-            </form>
-          </div>
-
-          {/* Security Credentials Form */}
-          <div className="rounded-xl p-6 border border-line bg-white shadow-card">
-            <h2 className="text-lg font-medium text-ink font-body mb-4">Security & Authentication</h2>
-            <p className="text-xs text-slate font-body mb-4 max-w-md">
-              Updating your email will require you to verify the new address. Updating your password will log out all other active sessions.
-            </p>
-            <form onSubmit={handleUpdateSecurity} className="space-y-4 max-w-md">
-              <Input 
-                label="Login Email" 
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-              <Input 
-                label="New Password" 
-                type="password"
-                placeholder="Leave blank to keep current password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-              <Button type="submit" disabled={isSavingAuth} variant="outline">
-                {isSavingAuth ? "Securing..." : "Update Security Credentials"}
-              </Button>
-            </form>
-          </div>
-        </div>
-      </div>
-      <Toaster position="top-right" richColors />
-    </AppLayout>
-  );
-}
-</file>
-
 <file path="src/components/features/accounts/AccountFormModal.tsx">
 "use client";
 import React, { useState, useEffect } from "react";
@@ -2847,6 +2729,122 @@ export default function ReportsPage() {
 }
 </file>
 
+<file path="src/app/settings/profile/page.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { SectionTitle } from "@/components/ui/SectionTitle";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { createClient } from "@/lib/supabase";
+import { toast, Toaster } from "sonner";
+import { useAppStore } from "@/store/useAppStore";
+
+export default function ProfileSettingsPage() {
+  const supabase = createClient();
+  // Destructure setUserName from our newly updated store
+  const { userId, userName, userEmail, setUserName } = useAppStore();
+  
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isSavingAuth, setIsSavingAuth] = useState(false);
+
+  useEffect(() => {
+    // Populate form with global state data on load
+    if (userName) setFullName(userName);
+    if (userEmail) setEmail(userEmail);
+  }, [userName, userEmail]);
+
+  const handleUpdateProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!userId) return;
+    setIsSavingProfile(true);
+
+    const { error } = await supabase.from("users").update({ full_name: fullName }).eq("id", userId);
+    
+    setIsSavingProfile(false);
+    if (error) {
+      toast.error("Failed to update profile.");
+    } else {
+      toast.success("Profile updated successfully.");
+      // Instantly update the sidebar/topbar UI!
+      setUserName(fullName);
+    }
+  };
+
+  const handleUpdateSecurity = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingAuth(true);
+
+    const updates: any = {};
+    if (email !== userEmail) updates.email = email;
+    if (password) updates.password = password;
+
+    const { error } = await supabase.auth.updateUser(updates);
+
+    setIsSavingAuth(false);
+    if (error) {
+      toast.error("Security update failed", { description: error.message });
+    } else {
+      toast.success("Security credentials updated! Please verify your new email if changed.");
+      setPassword("");
+    }
+  };
+
+  return (
+    <AppLayout>
+      <div className="p-4 md:p-8 max-w-3xl mx-auto flex-1 w-full">
+        <SectionTitle eyebrow="Settings" title="Personal Profile" />
+
+        <div className="space-y-6 mt-6">
+          <div className="rounded-xl p-6 border border-line bg-white shadow-card">
+            <h2 className="text-lg font-medium text-ink font-body mb-4">Public Information</h2>
+            <form onSubmit={handleUpdateProfile} className="space-y-4 max-w-md">
+              <Input 
+                label="Full Name" 
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+              />
+              <Button type="submit" disabled={isSavingProfile}>
+                {isSavingProfile ? "Saving..." : "Save Profile"}
+              </Button>
+            </form>
+          </div>
+
+          <div className="rounded-xl p-6 border border-line bg-white shadow-card">
+            <h2 className="text-lg font-medium text-ink font-body mb-4">Security & Authentication</h2>
+            <p className="text-xs text-slate font-body mb-4 max-w-md">
+              Updating your email will require you to verify the new address. Updating your password will log out all other active sessions.
+            </p>
+            <form onSubmit={handleUpdateSecurity} className="space-y-4 max-w-md">
+              <Input 
+                label="Login Email" 
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+              <Input 
+                label="New Password" 
+                type="password"
+                placeholder="Leave blank to keep current password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <Button type="submit" disabled={isSavingAuth} variant="outline">
+                {isSavingAuth ? "Securing..." : "Update Security Credentials"}
+              </Button>
+            </form>
+          </div>
+        </div>
+      </div>
+      <Toaster position="top-right" richColors />
+    </AppLayout>
+  );
+}
+</file>
+
 <file path="src/app/settings/team/page.tsx">
 "use client";
 import React, { useState, useEffect } from "react";
@@ -3861,224 +3859,6 @@ export function TaskFormModal({ isOpen, onClose, onSuccess }: { isOpen: boolean;
 }
 </file>
 
-<file path="src/components/layout/Topbar.tsx">
-"use client";
-import React, { useState, useRef, useEffect } from "react";
-import { useAppStore } from "@/store/useAppStore";
-import { Menu, Search, Bell, User, LogOut } from "lucide-react";
-import { Avatar } from "@/components/ui/Avatar";
-import { usePathname, useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase";
-
-export function Topbar() {
-  const { setMobileMenuOpen, setCommandPaletteOpen, userRole, setActiveOrgId, setUser } = useAppStore();
-  const pathname = usePathname();
-  const router = useRouter();
-  const supabase = createClient();
-  
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const profileRef = useRef<HTMLDivElement>(null);
-  const notifRef = useRef<HTMLDivElement>(null);
-
-  // Close dropdowns when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (profileRef.current && !profileRef.current.contains(event.target as Node)) setProfileOpen(false);
-      if (notifRef.current && !notifRef.current.contains(event.target as Node)) setNotificationsOpen(false);
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  const getTitle = () => {
-    const path = pathname.split('/')[1] || 'dashboard';
-    return path.charAt(0).toUpperCase() + path.slice(1);
-  };
-
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    setActiveOrgId(null);
-    setUser(null, null);
-    router.push('/auth/login');
-  };
-
-  return (
-    <div className="flex items-center justify-between px-4 md:px-8 py-4 border-b border-line bg-paper z-20">
-      <div className="flex items-center gap-3">
-        <button onClick={() => setMobileMenuOpen(true)} className="md:hidden text-ink">
-          <Menu size={20} />
-        </button>
-        <div className="text-sm text-slate font-body font-medium">
-          {getTitle()}
-        </div>
-      </div>
-      
-      <div className="flex items-center gap-3 md:gap-4">
-        {/* Fake Search Input -> Triggers Cmd+K */}
-        <div className="relative hidden sm:block cursor-text" onClick={() => setCommandPaletteOpen(true)}>
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate" />
-          <div className="pl-8 pr-3 py-1.5 rounded-lg text-sm w-48 md:w-64 bg-paperDim border border-transparent font-body text-slate flex items-center justify-between hover:bg-white hover:border-line transition-all">
-            <span>Search...</span>
-            <span className="text-[10px] font-mono bg-line/50 px-1.5 rounded">⌘K</span>
-          </div>
-        </div>
-
-        <button className="sm:hidden text-slate" onClick={() => setCommandPaletteOpen(true)}>
-          <Search size={17} />
-        </button>
-
-        {/* Notifications Dropdown */}
-        <div className="relative" ref={notifRef}>
-          <button className="relative p-1" onClick={() => setNotificationsOpen(!notificationsOpen)}>
-            <Bell size={17} className="text-slate hover:text-ink transition-colors" />
-            <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-berry border border-paper" />
-          </button>
-          
-          {notificationsOpen && (
-            <div className="absolute right-0 mt-2 w-72 bg-white rounded-xl shadow-xl border border-line overflow-hidden z-50">
-              <div className="px-4 py-3 border-b border-line bg-paperDim/50">
-                <span className="text-sm font-medium text-ink font-body">Notifications</span>
-              </div>
-              <div className="p-4 text-center text-sm text-slate font-body">
-                You're all caught up!
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Avatar Dropdown */}
-        <div className="relative" ref={profileRef}>
-          <div onClick={() => setProfileOpen(!profileOpen)} className="cursor-pointer">
-            <Avatar name={userRole?.toUpperCase() || "Pyrexx"} size={28} className="hover:ring-2 hover:ring-berry hover:ring-offset-1 transition-all" />
-          </div>
-          
-          {profileOpen && (
-            <div className="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-xl border border-line overflow-hidden z-50">
-              <button 
-                onClick={() => { setProfileOpen(false); router.push('/settings/profile'); }}
-                className="w-full text-left px-4 py-2.5 text-sm text-ink font-body hover:bg-paperDim transition-colors flex items-center gap-2"
-              >
-                <User size={14} className="text-slate" /> Profile Settings
-              </button>
-              <div className="border-t border-line" />
-              <button 
-                onClick={handleLogout}
-                className="w-full text-left px-4 py-2.5 text-sm text-berry font-body hover:bg-berrySoft transition-colors flex items-center gap-2"
-              >
-                <LogOut size={14} /> Sign out
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="src/components/providers/AuthProvider.tsx">
-"use client";
-import React, { useEffect, useState } from 'react';
-import { createClient } from '@/lib/supabase';
-import { useAppStore, Workspace } from '@/store/useAppStore';
-import { useRouter } from 'next/navigation';
-
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const supabase = createClient();
-  const router = useRouter();
-  const { activeOrgId, setActiveOrgId, setUser, setWorkspace, setWorkspaces } = useAppStore();
-  const [isBootstrapping, setIsBootstrapping] = useState(true);
-
-  useEffect(() => {
-    const bootstrap = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      if (!user) {
-        setIsBootstrapping(false);
-        return;
-      }
-
-      const { data: memberships } = await supabase
-        .from('memberships')
-        .select('role, org_id, organizations(id, name, type)')
-        .eq('user_id', user.id);
-
-      if (memberships && memberships.length > 0) {
-        const availableWorkspaces: Workspace[] = [];
-        
-        // FIX: Explicitly type this as 'any' so TypeScript doesn't lock it as 'null'
-        let agencyMembership: any = null;
-
-        memberships.forEach((m: any) => {
-          const org = Array.isArray(m.organizations) ? m.organizations[0] : m.organizations;
-          if (org) {
-            availableWorkspaces.push({
-              id: org.id,
-              name: org.name,
-              type: org.type as 'agency' | 'clinic'
-            });
-
-            if (org.type === 'agency') {
-              agencyMembership = m;
-            }
-          }
-        });
-
-        setWorkspaces(availableWorkspaces);
-
-        // FIX: Explicitly type 'm' as 'any' in the find method
-        const currentMembership = memberships.find((m: any) => m.org_id === activeOrgId);
-        
-        if (currentMembership) {
-          setUser(user.id, currentMembership.role);
-        } else if (agencyMembership) {
-          setUser(user.id, agencyMembership.role);
-        } else {
-          setUser(user.id, memberships[0].role);
-        }
-
-        const validOrgIds = availableWorkspaces.map(w => w.id);
-        if (!activeOrgId || !validOrgIds.includes(activeOrgId)) {
-          if (agencyMembership) {
-            setActiveOrgId(agencyMembership.org_id);
-            setWorkspace('agency');
-          } else {
-            setActiveOrgId(availableWorkspaces[0].id);
-            setWorkspace(availableWorkspaces[0].type);
-          }
-        }
-      }
-
-      setIsBootstrapping(false);
-    };
-
-    bootstrap();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_OUT') {
-        setActiveOrgId(null);
-        setUser(null, null);
-        setWorkspaces([]);
-        router.push('/auth/login');
-      }
-    });
-
-    return () => subscription.unsubscribe();
-  }, [supabase, activeOrgId, setActiveOrgId, setUser, setWorkspace, setWorkspaces, router]);
-
-  if (isBootstrapping) {
-    return (
-      <div className="h-screen w-full flex items-center justify-center bg-paper">
-        <div className="w-6 h-6 border-2 border-berry border-t-transparent rounded-full animate-spin"></div>
-      </div>
-    );
-  }
-
-  return <>{children}</>;
-}
-</file>
-
 <file path="src/components/ui/CommandPalette.tsx">
 "use client";
 import React, { useState, useEffect } from "react";
@@ -4948,6 +4728,297 @@ export function PipelineBoard() {
 }
 </file>
 
+<file path="src/components/layout/Topbar.tsx">
+"use client";
+import React, { useState, useRef, useEffect } from "react";
+import { useAppStore } from "@/store/useAppStore";
+import { Menu, Search, Bell, User, LogOut } from "lucide-react";
+import { Avatar } from "@/components/ui/Avatar";
+import { usePathname, useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase";
+
+export function Topbar() {
+  const { setMobileMenuOpen, setCommandPaletteOpen, userRole, setActiveOrgId, setUser } = useAppStore();
+  const pathname = usePathname();
+  const router = useRouter();
+  const supabase = createClient();
+  
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
+  const notifRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdowns when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(event.target as Node)) setProfileOpen(false);
+      if (notifRef.current && !notifRef.current.contains(event.target as Node)) setNotificationsOpen(false);
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const getTitle = () => {
+    const path = pathname.split('/')[1] || 'dashboard';
+    return path.charAt(0).toUpperCase() + path.slice(1);
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setActiveOrgId(null);
+    setUser(null, null);
+    router.push('/auth/login');
+  };
+
+  return (
+    <div className="flex items-center justify-between px-4 md:px-8 py-4 border-b border-line bg-paper z-20">
+      <div className="flex items-center gap-3">
+        <button onClick={() => setMobileMenuOpen(true)} className="md:hidden text-ink">
+          <Menu size={20} />
+        </button>
+        <div className="text-sm text-slate font-body font-medium">
+          {getTitle()}
+        </div>
+      </div>
+      
+      <div className="flex items-center gap-3 md:gap-4">
+        {/* Fake Search Input -> Triggers Cmd+K */}
+        <div className="relative hidden sm:block cursor-text" onClick={() => setCommandPaletteOpen(true)}>
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate" />
+          <div className="pl-8 pr-3 py-1.5 rounded-lg text-sm w-48 md:w-64 bg-paperDim border border-transparent font-body text-slate flex items-center justify-between hover:bg-white hover:border-line transition-all">
+            <span>Search...</span>
+            <span className="text-[10px] font-mono bg-line/50 px-1.5 rounded">⌘K</span>
+          </div>
+        </div>
+
+        <button className="sm:hidden text-slate" onClick={() => setCommandPaletteOpen(true)}>
+          <Search size={17} />
+        </button>
+
+        {/* Notifications Dropdown */}
+        <div className="relative" ref={notifRef}>
+          <button className="relative p-1" onClick={() => setNotificationsOpen(!notificationsOpen)}>
+            <Bell size={17} className="text-slate hover:text-ink transition-colors" />
+            <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-berry border border-paper" />
+          </button>
+          
+          {notificationsOpen && (
+            <div className="absolute right-0 mt-2 w-72 bg-white rounded-xl shadow-xl border border-line overflow-hidden z-50">
+              <div className="px-4 py-3 border-b border-line bg-paperDim/50">
+                <span className="text-sm font-medium text-ink font-body">Notifications</span>
+              </div>
+              <div className="p-4 text-center text-sm text-slate font-body">
+                You're all caught up!
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Avatar Dropdown */}
+        <div className="relative" ref={profileRef}>
+          <div onClick={() => setProfileOpen(!profileOpen)} className="cursor-pointer">
+            <Avatar 
+              name={useAppStore(s => s.userName) || "User"} 
+              size={28} 
+              className="hover:ring-2 hover:ring-berry hover:ring-offset-1 transition-all" 
+            />
+          </div>
+          
+          {profileOpen && (
+            <div className="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-xl border border-line overflow-hidden z-50">
+              <button 
+                onClick={() => { setProfileOpen(false); router.push('/settings/profile'); }}
+                className="w-full text-left px-4 py-2.5 text-sm text-ink font-body hover:bg-paperDim transition-colors flex items-center gap-2"
+              >
+                <User size={14} className="text-slate" /> Profile Settings
+              </button>
+              <div className="border-t border-line" />
+              <button 
+                onClick={handleLogout}
+                className="w-full text-left px-4 py-2.5 text-sm text-berry font-body hover:bg-berrySoft transition-colors flex items-center gap-2"
+              >
+                <LogOut size={14} /> Sign out
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/providers/AuthProvider.tsx">
+"use client";
+import React, { useEffect, useState } from 'react';
+import { createClient } from '@/lib/supabase';
+import { useAppStore, Workspace } from '@/store/useAppStore';
+import { useRouter } from 'next/navigation';
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const supabase = createClient();
+  const router = useRouter();
+  const { activeOrgId, setActiveOrgId, setUser, setUserName, setUserEmail, setWorkspace, setWorkspaces } = useAppStore();
+  const [isBootstrapping, setIsBootstrapping] = useState(true);
+
+  useEffect(() => {
+    const bootstrap = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) {
+        setIsBootstrapping(false);
+        return;
+      }
+
+      // Fetch the user's profile details
+      const { data: profile } = await supabase.from('users').select('full_name, email').eq('id', user.id).single();
+      if (profile) {
+        setUserName(profile.full_name);
+        setUserEmail(profile.email);
+      }
+
+      const { data: memberships } = await supabase
+        .from('memberships')
+        .select('role, org_id, organizations(id, name, type)')
+        .eq('user_id', user.id);
+
+      if (memberships && memberships.length > 0) {
+        const availableWorkspaces: Workspace[] = [];
+        let agencyMembership: any = null;
+
+        memberships.forEach((m: any) => {
+          const org = Array.isArray(m.organizations) ? m.organizations[0] : m.organizations;
+          if (org) {
+            availableWorkspaces.push({ id: org.id, name: org.name, type: org.type as 'agency' | 'clinic' });
+            if (org.type === 'agency') agencyMembership = m;
+          }
+        });
+
+        setWorkspaces(availableWorkspaces);
+
+        const currentMembership = memberships.find((m: any) => m.org_id === activeOrgId);
+        
+        if (currentMembership) {
+          setUser(user.id, currentMembership.role);
+        } else if (agencyMembership) {
+          setUser(user.id, agencyMembership.role);
+        } else {
+          setUser(user.id, memberships[0].role);
+        }
+
+        const validOrgIds = availableWorkspaces.map(w => w.id);
+        if (!activeOrgId || !validOrgIds.includes(activeOrgId)) {
+          if (agencyMembership) {
+            setActiveOrgId(agencyMembership.org_id);
+            setWorkspace('agency');
+          } else {
+            setActiveOrgId(availableWorkspaces[0].id);
+            setWorkspace(availableWorkspaces[0].type);
+          }
+        }
+      }
+
+      setIsBootstrapping(false);
+    };
+
+    bootstrap();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        setActiveOrgId(null);
+        setUser(null, null);
+        setUserName(null);
+        setUserEmail(null);
+        setWorkspaces([]);
+        router.push('/auth/login');
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [supabase, activeOrgId, setActiveOrgId, setUser, setUserName, setUserEmail, setWorkspace, setWorkspaces, router]);
+
+  if (isBootstrapping) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-paper">
+        <div className="w-6 h-6 border-2 border-berry border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
+</file>
+
+<file path="tailwind.config.ts">
+import type { Config } from "tailwindcss";
+
+const config: Config = {
+  content: [
+    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        ink: "#13141B",
+        inkSoft: "#1B1D27",
+        ink600: "#3A3D49",
+        paper: "#F5F5F2",
+        paperDim: "#EDECE7",
+        line: "#E3E1DA",
+        berry: "#AF3358",
+        berrySoft: "#F3DEE5",
+        amber: "#D69A32",
+        amberSoft: "#F7ECD6",
+        sage: "#4C8A67",
+        sageSoft: "#DDEBE1",
+        slate: "#6B6E77",
+      },
+      fontFamily: {
+        display: ["var(--font-display)"],
+        body: ["var(--font-body)"],
+        mono: ["var(--font-mono)"],
+      },
+      boxShadow: {
+        card: "0px 2px 4px rgba(19, 20, 27, 0.04)",
+      }
+    },
+  },
+  plugins: [
+    require('@tailwindcss/typography'), // <-- Ensures TipTap rich text renders beautifully
+  ],
+};
+export default config;
+</file>
+
+<file path="src/components/layout/AppLayout.tsx">
+"use client";
+import React from "react";
+import { Sidebar } from "./Sidebar";
+import { Topbar } from "./Topbar";
+import { MobileTabBar } from "./MobileTabBar";
+import { MobileDrawer } from "./MobileDrawer";
+import { CommandPalette } from "@/components/ui/CommandPalette";
+
+export function AppLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="h-screen w-full flex bg-paper overflow-hidden">
+      <Sidebar />
+      <div className="flex-1 flex flex-col min-w-0 h-full relative">
+        <Topbar />
+        <main className="flex-1 overflow-y-auto pb-[72px] md:pb-0 flex flex-col relative">
+          {children}
+        </main>
+      </div>
+      <MobileTabBar />
+      <MobileDrawer />
+      <CommandPalette />
+    </div>
+  );
+}
+</file>
+
 <file path="src/components/layout/MobileDrawer.tsx">
 "use client";
 import React, { useEffect } from "react";
@@ -5097,10 +5168,10 @@ export function MobileDrawer() {
       </div>
 
       <div className="p-4 flex items-center gap-2.5 border-t border-inkSoft pb-safe">
-        <Avatar name="Pyrexx Admin" size={30} />
-        <div className="text-xs font-body">
-          <div className="text-paper">Pyrexx Admin</div>
-          <div className="text-slate">Active Session</div>
+        <Avatar name={useAppStore(s => s.userName) || "User"} size={30} />
+        <div className="text-xs font-body truncate">
+          <div className="text-paper truncate">{useAppStore(s => s.userName) || "Pyrexx User"}</div>
+          <div className="text-slate capitalize">{useAppStore(s => s.userRole) || "Role"}</div>
         </div>
       </div>
     </div>
@@ -5243,10 +5314,10 @@ export function Sidebar() {
       </div>
 
       <div className="p-4 flex items-center gap-2.5 border-t border-inkSoft">
-        <Avatar name="Pyrexx Admin" size={30} />
-        <div className="text-xs font-body">
-          <div className="text-paper font-medium">Pyrexx Admin</div>
-          <div className="text-slate">Active Session</div>
+        <Avatar name={useAppStore(s => s.userName) || "User"} size={30} />
+        <div className="text-xs font-body truncate">
+          <div className="text-paper font-medium truncate">{useAppStore(s => s.userName) || "Pyrexx User"}</div>
+          <div className="text-slate capitalize">{useAppStore(s => s.userRole) || "Role"}</div>
         </div>
       </div>
     </div>
@@ -5271,6 +5342,8 @@ interface AppState {
   activeOrgId: string | null;
   userRole: string | null;
   userId: string | null;
+  userName: string | null;
+  userEmail: string | null;
   workspaces: Workspace[];
   mobileMenuOpen: boolean;
   commandPaletteOpen: boolean;
@@ -5278,6 +5351,8 @@ interface AppState {
   setWorkspace: (ws: WorkspaceType) => void;
   setActiveOrgId: (id: string | null) => void;
   setUser: (id: string | null, role: string | null) => void;
+  setUserName: (name: string | null) => void;
+  setUserEmail: (email: string | null) => void;
   setWorkspaces: (workspaces: Workspace[]) => void;
   setMobileMenuOpen: (open: boolean) => void;
   setCommandPaletteOpen: (open: boolean) => void;
@@ -5290,6 +5365,8 @@ export const useAppStore = create<AppState>()(
       activeOrgId: null,
       userRole: null,
       userId: null,
+      userName: null,
+      userEmail: null,
       workspaces: [],
       mobileMenuOpen: false,
       commandPaletteOpen: false,
@@ -5297,6 +5374,8 @@ export const useAppStore = create<AppState>()(
       setWorkspace: (ws) => set({ currentWorkspace: ws }),
       setActiveOrgId: (id) => set({ activeOrgId: id }),
       setUser: (id, role) => set({ userId: id, userRole: role }),
+      setUserName: (name) => set({ userName: name }),
+      setUserEmail: (email) => set({ userEmail: email }),
       setWorkspaces: (workspaces) => set({ workspaces }),
       setMobileMenuOpen: (open) => set({ mobileMenuOpen: open }),
       setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
@@ -5307,83 +5386,13 @@ export const useAppStore = create<AppState>()(
         currentWorkspace: state.currentWorkspace,
         activeOrgId: state.activeOrgId,
         userRole: state.userRole,
-        userId: state.userId
+        userId: state.userId,
+        userName: state.userName,
+        userEmail: state.userEmail
       }), 
-      // Note: We do NOT persist the `workspaces` array. 
-      // We want to fetch it fresh on every load so if access is revoked, it updates instantly.
     }
   )
 );
-</file>
-
-<file path="tailwind.config.ts">
-import type { Config } from "tailwindcss";
-
-const config: Config = {
-  content: [
-    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
-  ],
-  theme: {
-    extend: {
-      colors: {
-        ink: "#13141B",
-        inkSoft: "#1B1D27",
-        ink600: "#3A3D49",
-        paper: "#F5F5F2",
-        paperDim: "#EDECE7",
-        line: "#E3E1DA",
-        berry: "#AF3358",
-        berrySoft: "#F3DEE5",
-        amber: "#D69A32",
-        amberSoft: "#F7ECD6",
-        sage: "#4C8A67",
-        sageSoft: "#DDEBE1",
-        slate: "#6B6E77",
-      },
-      fontFamily: {
-        display: ["var(--font-display)"],
-        body: ["var(--font-body)"],
-        mono: ["var(--font-mono)"],
-      },
-      boxShadow: {
-        card: "0px 2px 4px rgba(19, 20, 27, 0.04)",
-      }
-    },
-  },
-  plugins: [
-    require('@tailwindcss/typography'), // <-- Ensures TipTap rich text renders beautifully
-  ],
-};
-export default config;
-</file>
-
-<file path="src/components/layout/AppLayout.tsx">
-"use client";
-import React from "react";
-import { Sidebar } from "./Sidebar";
-import { Topbar } from "./Topbar";
-import { MobileTabBar } from "./MobileTabBar";
-import { MobileDrawer } from "./MobileDrawer";
-import { CommandPalette } from "@/components/ui/CommandPalette";
-
-export function AppLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="h-screen w-full flex bg-paper overflow-hidden">
-      <Sidebar />
-      <div className="flex-1 flex flex-col min-w-0 h-full relative">
-        <Topbar />
-        <main className="flex-1 overflow-y-auto pb-[72px] md:pb-0 flex flex-col relative">
-          {children}
-        </main>
-      </div>
-      <MobileTabBar />
-      <MobileDrawer />
-      <CommandPalette />
-    </div>
-  );
-}
 </file>
 
 </files>

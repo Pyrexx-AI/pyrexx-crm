@@ -13,7 +13,9 @@ import { Modal } from "@/components/ui/Modal";
 
 export default function TeamSettingsPage() {
   const supabase = createClient();
-  const { activeOrgId, userRole, userId } = useAppStore();
+  const activeOrgId = useAppStore(s => s.activeOrgId);
+  const userRole = useAppStore(s => s.userRole);
+  const userId = useAppStore(s => s.userId);
   
   const [members, setMembers] = useState<any[]>([]);
   const [isInviteOpen, setIsInviteOpen] = useState(false);
@@ -23,9 +25,7 @@ export default function TeamSettingsPage() {
   
   const [isMounted, setIsMounted] = useState(false);
   
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
+  useEffect(() => setIsMounted(true), []);
 
   const fetchTeam = async () => {
     if (!activeOrgId) return;
@@ -34,11 +34,6 @@ export default function TeamSettingsPage() {
       .select("role, created_at, users(id, full_name, email)")
       .eq("org_id", activeOrgId)
       .order("created_at", { ascending: true });
-
-    if (error) {
-      toast.error("Failed to load team data.");
-      return;
-    }
 
     if (data) setMembers(data);
   };
@@ -73,39 +68,20 @@ export default function TeamSettingsPage() {
   };
 
   const handleRoleChange = async (targetUserId: string, newRole: string) => {
-    const { error } = await supabase
-      .from("memberships")
-      .update({ role: newRole })
-      .eq("user_id", targetUserId)
-      .eq("org_id", activeOrgId);
-
-    if (error) {
-      toast.error("Failed to update role");
-      fetchTeam(); // Rollback UI if failed
-    } else {
-      toast.success("Role updated successfully");
-      fetchTeam();
-    }
+    const { error } = await supabase.from("memberships").update({ role: newRole }).eq("user_id", targetUserId).eq("org_id", activeOrgId);
+    if (error) toast.error("Failed to update role");
+    else { toast.success("Role updated"); fetchTeam(); }
   };
 
   const handleRemoveMember = async (targetUserId: string) => {
-    if (!window.confirm("Are you sure you want to revoke this user's access to the workspace?")) return;
-
-    const { error } = await supabase
-      .from("memberships")
-      .delete()
-      .eq("user_id", targetUserId)
-      .eq("org_id", activeOrgId);
-
-    if (error) {
-      toast.error("Failed to remove member");
-    } else {
-      toast.success("User access revoked");
-      fetchTeam();
-    }
+    if (!window.confirm("Are you sure you want to revoke this user's access?")) return;
+    const { error } = await supabase.from("memberships").delete().eq("user_id", targetUserId).eq("org_id", activeOrgId);
+    if (error) toast.error("Failed to remove member");
+    else { toast.success("User removed"); fetchTeam(); }
   };
 
-  const isManager = userRole?.toLowerCase() === 'owner' || userRole?.toLowerCase() === 'manager';
+  // FIX: Added 'admin' to the array just in case manual DB manipulation caused a role drift
+  const isManager = ['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '');
 
   return (
     <AppLayout>
@@ -161,9 +137,7 @@ export default function TeamSettingsPage() {
                           <option value="owner">OWNER</option>
                         </select>
                       ) : (
-                        <span className={`px-2 py-1 rounded text-xs uppercase font-medium ${
-                          m.role === 'owner' ? 'bg-sageSoft text-sage' : m.role === 'manager' ? 'bg-amberSoft text-amber' : 'bg-paperDim text-slate'
-                        }`}>
+                        <span className="px-2 py-1 rounded text-xs uppercase font-medium bg-paperDim text-slate">
                           {m.role}
                         </span>
                       )}
@@ -195,21 +169,10 @@ export default function TeamSettingsPage() {
 
         <Modal isOpen={isInviteOpen} onClose={() => setIsInviteOpen(false)} title="Invite Team Member">
           <form onSubmit={handleInvite} className="space-y-4">
-            <Input 
-              label="Email Address" 
-              type="email" 
-              placeholder="name@pyrexxai.com" 
-              value={inviteEmail}
-              onChange={(e) => setInviteEmail(e.target.value)}
-              required
-            />
+            <Input label="Email Address" type="email" placeholder="name@pyrexxai.com" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} required />
             <div className="w-full flex flex-col gap-1.5 mb-3">
               <label className="text-xs text-slate font-body font-medium">Role</label>
-              <select 
-                value={inviteRole}
-                onChange={(e) => setInviteRole(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg text-sm outline-none bg-paperDim font-body text-ink border border-transparent focus:border-berry transition-all"
-              >
+              <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)} className="w-full px-3 py-2 rounded-lg text-sm outline-none bg-paperDim font-body text-ink border border-transparent focus:border-berry transition-all">
                 <option value="rep">Sales Rep (Restricted View)</option>
                 <option value="manager">Manager (Global View)</option>
                 <option value="owner">Owner (Admin Access)</option>

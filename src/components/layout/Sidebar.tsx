@@ -31,7 +31,15 @@ const CLINIC_NAV = [
 ];
 
 export function Sidebar() {
-  const { currentWorkspace, activeOrgId, workspaces, setWorkspace, setActiveOrgId } = useAppStore();
+  // FIX: Extracting state directly ensures reactivity
+  const currentWorkspace = useAppStore(s => s.currentWorkspace);
+  const activeOrgId = useAppStore(s => s.activeOrgId);
+  const workspaces = useAppStore(s => s.workspaces);
+  const setWorkspace = useAppStore(s => s.setWorkspace);
+  const setActiveOrgId = useAppStore(s => s.setActiveOrgId);
+  const userName = useAppStore(s => s.userName) || "User";
+  const userRole = useAppStore(s => s.userRole) || "Role";
+
   const pathname = usePathname();
   const nav = currentWorkspace === "agency" ? AGENCY_NAV : CLINIC_NAV;
 
@@ -42,8 +50,6 @@ export function Sidebar() {
     if (targetWorkspace) {
       setActiveOrgId(targetWorkspace.id);
       setWorkspace(targetWorkspace.type);
-      // We force a hard reload here to ensure all data and roles re-fetch cleanly 
-      // into the new environment context.
       window.location.href = "/"; 
     }
   };
@@ -132,10 +138,10 @@ export function Sidebar() {
       </div>
 
       <div className="p-4 flex items-center gap-2.5 border-t border-inkSoft">
-        <Avatar name={useAppStore(s => s.userName) || "User"} size={30} />
+        <Avatar name={userName} size={30} />
         <div className="text-xs font-body truncate">
-          <div className="text-paper font-medium truncate">{useAppStore(s => s.userName) || "Pyrexx User"}</div>
-          <div className="text-slate capitalize">{useAppStore(s => s.userRole) || "Role"}</div>
+          <div className="text-paper font-medium truncate">{userName}</div>
+          <div className="text-slate capitalize truncate">{userRole}</div>
         </div>
       </div>
     </div>

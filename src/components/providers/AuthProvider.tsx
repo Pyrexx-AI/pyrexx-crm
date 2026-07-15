@@ -19,12 +19,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      // Fetch the user's profile details
-      const { data: profile } = await supabase.from('users').select('full_name, email').eq('id', user.id).single();
-      if (profile) {
-        setUserName(profile.full_name);
-        setUserEmail(profile.email);
-      }
+      // Safe fetch using maybeSingle to prevent crashes if profile row is missing
+      const { data: profile } = await supabase.from('users').select('full_name, email').eq('id', user.id).maybeSingle();
+      
+      // Fallback to email prefix if full_name is completely missing
+      const fallbackName = user.email?.split('@')[0] || "User";
+      setUserName(profile?.full_name || fallbackName);
+      setUserEmail(profile?.email || user.email || "");
 
       const { data: memberships } = await supabase
         .from('memberships')
@@ -38,8 +39,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         memberships.forEach((m: any) => {
           const org = Array.isArray(m.organizations) ? m.organizations[0] : m.organizations;
           if (org) {
-            availableWorkspaces.push({ id: org.id, name: org.name, type: org.type as 'agency' | 'clinic' });
-            if (org.type === 'agency') agencyMembership = m;
+            availableWorkspaces.push({
+              id: org.id,
+              name: org.name,
+              type: org.type as 'agency' | 'clinic'
+            });
+
+            if (org.type === 'agency') {
+              agencyMembership = m;
+            }
           }
         });
 
@@ -65,6 +73,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setWorkspace(availableWorkspaces[0].type);
           }
         }
+      } else {
+        // Ensure user state is still set even if they have no memberships yet
+        setUser(user.id, null);
       }
 
       setIsBootstrapping(false);

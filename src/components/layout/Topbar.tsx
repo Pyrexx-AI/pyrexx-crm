@@ -7,7 +7,13 @@ import { usePathname, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase";
 
 export function Topbar() {
-  const { setMobileMenuOpen, setCommandPaletteOpen, userRole, setActiveOrgId, setUser } = useAppStore();
+  // FIX: Extracting state directly prevents React Hydration errors
+  const setMobileMenuOpen = useAppStore(s => s.setMobileMenuOpen);
+  const setCommandPaletteOpen = useAppStore(s => s.setCommandPaletteOpen);
+  const setActiveOrgId = useAppStore(s => s.setActiveOrgId);
+  const setUser = useAppStore(s => s.setUser);
+  const userName = useAppStore(s => s.userName) || "User";
+  
   const pathname = usePathname();
   const router = useRouter();
   const supabase = createClient();
@@ -17,7 +23,6 @@ export function Topbar() {
   const profileRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
 
-  // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (profileRef.current && !profileRef.current.contains(event.target as Node)) setProfileOpen(false);
@@ -45,13 +50,10 @@ export function Topbar() {
         <button onClick={() => setMobileMenuOpen(true)} className="md:hidden text-ink">
           <Menu size={20} />
         </button>
-        <div className="text-sm text-slate font-body font-medium">
-          {getTitle()}
-        </div>
+        <div className="text-sm text-slate font-body font-medium">{getTitle()}</div>
       </div>
       
       <div className="flex items-center gap-3 md:gap-4">
-        {/* Fake Search Input -> Triggers Cmd+K */}
         <div className="relative hidden sm:block cursor-text" onClick={() => setCommandPaletteOpen(true)}>
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate" />
           <div className="pl-8 pr-3 py-1.5 rounded-lg text-sm w-48 md:w-64 bg-paperDim border border-transparent font-body text-slate flex items-center justify-between hover:bg-white hover:border-line transition-all">
@@ -64,7 +66,6 @@ export function Topbar() {
           <Search size={17} />
         </button>
 
-        {/* Notifications Dropdown */}
         <div className="relative" ref={notifRef}>
           <button className="relative p-1" onClick={() => setNotificationsOpen(!notificationsOpen)}>
             <Bell size={17} className="text-slate hover:text-ink transition-colors" />
@@ -83,14 +84,9 @@ export function Topbar() {
           )}
         </div>
 
-        {/* Avatar Dropdown */}
         <div className="relative" ref={profileRef}>
           <div onClick={() => setProfileOpen(!profileOpen)} className="cursor-pointer">
-            <Avatar 
-              name={useAppStore(s => s.userName) || "User"} 
-              size={28} 
-              className="hover:ring-2 hover:ring-berry hover:ring-offset-1 transition-all" 
-            />
+            <Avatar name={userName} size={28} className="hover:ring-2 hover:ring-berry hover:ring-offset-1 transition-all" />
           </div>
           
           {profileOpen && (

@@ -17,31 +17,34 @@ export default function IntegrationsPage() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    let isMounted = true;
+
     const fetchSettings = async () => {
+      // Wait for auth provider to populate state
       if (!userId || !activeOrgId) return;
 
-      // 1. Fetch User Calendar State
-      const { data: user } = await supabase.from("users").select("calendar_connected").eq("id", userId).single();
-      if (user) setCalendarConnected(user.calendar_connected);
+      const { data: user } = await supabase.from("users").select("calendar_connected").eq("id", userId).maybeSingle();
+      if (isMounted && user) setCalendarConnected(user.calendar_connected);
 
-      // 2. Fetch Org Automations
+      // FIX: Use maybeSingle() so missing rows return null instead of throwing an error
       const { data: automations } = await supabase
         .from("org_automations")
         .select("is_active")
         .eq("org_id", activeOrgId)
         .eq("automation_key", "stale_proposal_followup")
-        .single();
+        .maybeSingle();
       
-      if (automations) setAutoFollowUp(automations.is_active);
-
-      setIsLoading(false);
+      if (isMounted) {
+        if (automations) setAutoFollowUp(automations.is_active);
+        setIsLoading(false);
+      }
     };
+    
     fetchSettings();
+    return () => { isMounted = false; };
   }, [userId, activeOrgId, supabase]);
 
   const toggleCalendar = async () => {
-    // In production, this redirects to Google/Microsoft OAuth flow (Nylas/Cronofy).
-    // For the MVP, we simulate a successful connection.
     const newState = !calendarConnected;
     setCalendarConnected(newState);
     
@@ -70,13 +73,22 @@ export default function IntegrationsPage() {
 
     if (error) {
       toast.error("Failed to update automation.");
-      setAutoFollowUp(!newState); // Rollback
+      setAutoFollowUp(!newState); 
     } else {
       toast.success(newState ? "Automation Enabled" : "Automation Disabled");
     }
   };
 
-  if (isLoading) return <AppLayout><div className="flex-1" /></AppLayout>;
+  // Safe fallback loader
+  if (isLoading) {
+    return (
+      <AppLayout>
+        <div className="h-full flex flex-1 items-center justify-center">
+           <div className="animate-spin w-6 h-6 border-2 border-berry border-t-transparent rounded-full" />
+        </div>
+      </AppLayout>
+    );
+  }
 
   return (
     <AppLayout>
@@ -84,8 +96,6 @@ export default function IntegrationsPage() {
         <SectionTitle eyebrow="Settings" title="Integrations & Automations" />
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-          
-          {/* User Integration: Calendar */}
           <div className="rounded-xl p-6 border border-line bg-white shadow-card">
             <div className="flex items-center gap-3 mb-2">
               <div className="p-2 bg-paperDim rounded-lg"><Calendar size={20} className="text-ink" /></div>
@@ -104,7 +114,6 @@ export default function IntegrationsPage() {
             </div>
           </div>
 
-          {/* Org Automation: Drip Sequence */}
           <div className="rounded-xl p-6 border border-line bg-white shadow-card">
             <div className="flex items-center gap-3 mb-2">
               <div className="p-2 bg-paperDim rounded-lg"><Bot size={20} className="text-berry" /></div>
@@ -122,7 +131,6 @@ export default function IntegrationsPage() {
               </Button>
             </div>
           </div>
-
         </div>
       </div>
       <Toaster position="top-right" richColors />

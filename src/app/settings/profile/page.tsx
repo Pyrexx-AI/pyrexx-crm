@@ -10,7 +10,6 @@ import { useAppStore } from "@/store/useAppStore";
 
 export default function ProfileSettingsPage() {
   const supabase = createClient();
-  // Destructure setUserName from our newly updated store
   const { userId, userName, userEmail, setUserName } = useAppStore();
   
   const [fullName, setFullName] = useState("");
@@ -20,24 +19,30 @@ export default function ProfileSettingsPage() {
   const [isSavingAuth, setIsSavingAuth] = useState(false);
 
   useEffect(() => {
-    // Populate form with global state data on load
     if (userName) setFullName(userName);
     if (userEmail) setEmail(userEmail);
   }, [userName, userEmail]);
 
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userId) return;
+    if (!userId) {
+      toast.error("User session not found.");
+      return;
+    }
+    
     setIsSavingProfile(true);
 
-    const { error } = await supabase.from("users").update({ full_name: fullName }).eq("id", userId);
+    // FIX: Changed .update to .upsert to guarantee it saves even if the row is missing
+    const { error } = await supabase.from("users").upsert({ 
+      id: userId, 
+      full_name: fullName 
+    });
     
     setIsSavingProfile(false);
     if (error) {
-      toast.error("Failed to update profile.");
+      toast.error("Failed to update profile.", { description: error.message });
     } else {
       toast.success("Profile updated successfully.");
-      // Instantly update the sidebar/topbar UI!
       setUserName(fullName);
     }
   };
@@ -47,7 +52,7 @@ export default function ProfileSettingsPage() {
     setIsSavingAuth(true);
 
     const updates: any = {};
-    if (email !== userEmail) updates.email = email;
+    if (email && email !== userEmail) updates.email = email;
     if (password) updates.password = password;
 
     const { error } = await supabase.auth.updateUser(updates);
