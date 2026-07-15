@@ -7,6 +7,7 @@ import { Calendar, Bot, CheckCircle2 } from "lucide-react";
 import { createClient } from "@/lib/supabase";
 import { useAppStore } from "@/store/useAppStore";
 import { toast, Toaster } from "sonner";
+import { logger } from "@/lib/logger";
 
 export default function IntegrationsPage() {
   const supabase = createClient();
@@ -20,23 +21,36 @@ export default function IntegrationsPage() {
     let isMounted = true;
 
     const fetchSettings = async () => {
-      // Wait for auth provider to populate state
-      if (!userId || !activeOrgId) return;
-
-      const { data: user } = await supabase.from("users").select("calendar_connected").eq("id", userId).maybeSingle();
-      if (isMounted && user) setCalendarConnected(user.calendar_connected);
-
-      // FIX: Use maybeSingle() so missing rows return null instead of throwing an error
-      const { data: automations } = await supabase
-        .from("org_automations")
-        .select("is_active")
-        .eq("org_id", activeOrgId)
-        .eq("automation_key", "stale_proposal_followup")
-        .maybeSingle();
+      logger.info('IntegrationsPage', 'Fetching settings...', { userId, activeOrgId });
       
-      if (isMounted) {
-        if (automations) setAutoFollowUp(automations.is_active);
-        setIsLoading(false);
+      // FIX: Ensure we disable loading even if we abort early
+      if (!userId || !activeOrgId) {
+        logger.warn('IntegrationsPage', 'Missing userId or activeOrgId, aborting fetch.');
+        if (isMounted) setIsLoading(false);
+        return;
+      }
+
+      try {
+        const { data: user, error: userError } = await supabase.from("users").select("calendar_connected").eq("id", userId).maybeSingle();
+        if (userError) logger.error('IntegrationsPage', 'User fetch error', userError);
+        if (isMounted && user) setCalendarConnected(user.calendar_connected);
+
+        const { data: automations, error: autoError } = await supabase
+          .from("org_automations")
+          .select("is_active")
+          .eq("org_id", activeOrgId)
+          .eq("automation_key", "stale_proposal_followup")
+          .maybeSingle();
+        
+        if (autoError) logger.error('IntegrationsPage', 'Automations fetch error', autoError);
+        
+        if (isMounted && automations) {
+          setAutoFollowUp(automations.is_active);
+        }
+      } catch (err) {
+        logger.error('IntegrationsPage', 'Fatal fetch error', err);
+      } finally {
+        if (isMounted) setIsLoading(false);
       }
     };
     
@@ -48,12 +62,18 @@ export default function IntegrationsPage() {
     const newState = !calendarConnected;
     setCalendarConnected(newState);
     
-    await supabase.from("users").update({ 
+    const { error } = await supabase.from("users").update({ 
       calendar_connected: newState, 
       calendar_provider: newState ? 'google' : null 
     }).eq("id", userId);
 
-    toast.success(newState ? "Google Calendar Connected!" : "Calendar Disconnected.");
+    if (error) {
+      logger.error('IntegrationsPage', 'Calendar toggle error', error);
+      toast.error("Failed to connect calendar");
+      setCalendarConnected(!newState);
+    } else {
+      toast.success(newState ? "Google Calendar Connected!" : "Calendar Disconnected.");
+    }
   };
 
   const toggleAutomation = async () => {
@@ -72,6 +92,7 @@ export default function IntegrationsPage() {
     }, { onConflict: "org_id, automation_key" });
 
     if (error) {
+      logger.error('IntegrationsPage', 'Automation toggle error', error);
       toast.error("Failed to update automation.");
       setAutoFollowUp(!newState); 
     } else {
@@ -79,7 +100,6 @@ export default function IntegrationsPage() {
     }
   };
 
-  // Safe fallback loader
   if (isLoading) {
     return (
       <AppLayout>

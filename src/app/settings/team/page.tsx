@@ -10,6 +10,7 @@ import { createClient } from "@/lib/supabase";
 import { useAppStore } from "@/store/useAppStore";
 import { toast, Toaster } from "sonner";
 import { Modal } from "@/components/ui/Modal";
+import { logger } from "@/lib/logger";
 
 export default function TeamSettingsPage() {
   const supabase = createClient();
@@ -29,12 +30,22 @@ export default function TeamSettingsPage() {
 
   const fetchTeam = async () => {
     if (!activeOrgId) return;
+    
+    logger.info('TeamSettingsPage', 'Fetching team members...');
+    
     const { data, error } = await supabase
       .from("memberships")
       .select("role, created_at, users(id, full_name, email)")
       .eq("org_id", activeOrgId)
       .order("created_at", { ascending: true });
 
+    if (error) {
+      logger.error('TeamSettingsPage', 'Fetch error', error);
+      toast.error("Failed to load team data.");
+      return;
+    }
+
+    logger.info('TeamSettingsPage', 'Team members loaded', { count: data?.length });
     if (data) setMembers(data);
   };
 
@@ -47,6 +58,8 @@ export default function TeamSettingsPage() {
     if (!inviteEmail || !activeOrgId) return;
     
     setIsInviting(true);
+    logger.info('TeamSettingsPage', 'Sending invite request', { email: inviteEmail, role: inviteRole });
+
     const res = await fetch("/api/team/invite", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -63,25 +76,43 @@ export default function TeamSettingsPage() {
       setInviteRole("rep");
       fetchTeam();
     } else {
+      logger.error('TeamSettingsPage', 'Invite failed', data);
       toast.error(data.error || "Failed to invite user");
     }
   };
 
   const handleRoleChange = async (targetUserId: string, newRole: string) => {
     const { error } = await supabase.from("memberships").update({ role: newRole }).eq("user_id", targetUserId).eq("org_id", activeOrgId);
-    if (error) toast.error("Failed to update role");
-    else { toast.success("Role updated"); fetchTeam(); }
+    if (error) {
+      logger.error('TeamSettingsPage', 'Role update error', error);
+      toast.error("Failed to update role");
+    } else { 
+      toast.success("Role updated"); 
+      fetchTeam(); 
+    }
   };
 
   const handleRemoveMember = async (targetUserId: string) => {
     if (!window.confirm("Are you sure you want to revoke this user's access?")) return;
     const { error } = await supabase.from("memberships").delete().eq("user_id", targetUserId).eq("org_id", activeOrgId);
-    if (error) toast.error("Failed to remove member");
-    else { toast.success("User removed"); fetchTeam(); }
+    if (error) {
+      logger.error('TeamSettingsPage', 'Remove member error', error);
+      toast.error("Failed to remove member");
+    } else { 
+      toast.success("User removed"); 
+      fetchTeam(); 
+    }
   };
 
-  // FIX: Added 'admin' to the array just in case manual DB manipulation caused a role drift
   const isManager = ['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '');
+  
+  // Debug Log to explicitly tell you why the button hides or shows
+  if (isMounted) {
+    logger.info('TeamSettingsPage', 'Role evaluation for Invite Button', { 
+      currentRole: userRole, 
+      isManagerEvaluated: isManager 
+    });
+  }
 
   return (
     <AppLayout>
