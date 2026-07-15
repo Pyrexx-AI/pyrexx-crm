@@ -14,14 +14,25 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    // 1. Send the Invite via Supabase Admin API
-    const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(email);
+    // UPGRADE: Dynamically extract the origin header from the request
+    // This supports seamless local development (localhost) and production (crm.pyrexxai.com) redirections
+    const origin = req.headers.get("origin") || "https://crm.pyrexxai.com";
+    const redirectUrl = `${origin}/auth/update-password`;
+
+    console.log("[Team Invite API] Initiating invite with explicit redirect:", { 
+      email, 
+      redirectUrl 
+    });
+
+    // Pass the explicit redirect destination to the Supabase Auth invitation SDK
+    const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
+      redirectTo: redirectUrl // <-- Tells Supabase exactly which whitelisted URL to redirect to
+    });
 
     if (inviteError) {
       return NextResponse.json({ error: inviteError.message }, { status: 400 });
     }
 
-    // FIX: Safely unwrap the user ID to prevent strict null-check build failures
     const userId = inviteData?.user?.id;
     
     if (!userId) {

@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-// Uses Service Role to safely write to DB from an external webhook
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -10,7 +9,6 @@ const supabase = createClient(
 export async function POST(req: Request) {
   try {
     const payload = await req.json();
-
     const emailData = payload.data || payload; 
     const { from, to, subject, text, html } = emailData;
 
@@ -23,12 +21,12 @@ export async function POST(req: Request) {
     const toAddress = Array.isArray(to) ? to[0] : to;
     const localPart = toAddress.split("@")[0].toLowerCase();
 
-    // 1. Resolve Organization Slug
-    // If the address is peter.pyrexxai@..., the local-part is "peter.pyrexxai".
-    // We split by the dot to extract the actual organization slug: "pyrexxai".
+    // UPGRADE: Use pop() to safely isolate the last segment in a multi-dot rep name
+    // E.g., peter.gambo.pyrexxai -> "pyrexxai"
     let slug = localPart;
     if (localPart.includes(".")) {
-      slug = localPart.split(".")[1]; // "peter.pyrexxai" -> "pyrexxai"
+      const parts = localPart.split(".");
+      slug = parts.pop() || localPart;
     }
 
     console.log("[Inbound Webhook] Resolving organization via slug:", { localPart, resolvedSlug: slug });
@@ -39,7 +37,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
     }
 
-    // 2. Extract sender email and find Contact (Create if it's a new inbound inquiry)
     const senderEmailMatch = from.match(/<(.+)>/);
     const senderEmail = senderEmailMatch ? senderEmailMatch[1].toLowerCase() : from.toLowerCase();
     
@@ -66,7 +63,6 @@ export async function POST(req: Request) {
       contactId = newContact!.id;
     }
 
-    // 3. Find or create Thread
     let threadId = null;
     const { data: existingThread } = await supabase
       .from("threads")
@@ -89,7 +85,6 @@ export async function POST(req: Request) {
       threadId = newThread!.id;
     }
 
-    // 4. Insert the Message (Our Postgres trigger will auto-update the thread timestamp and unread status)
     const { error: insertError } = await supabase.from("messages").insert({
       thread_id: threadId,
       direction: "inbound",

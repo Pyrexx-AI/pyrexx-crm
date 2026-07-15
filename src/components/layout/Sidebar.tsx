@@ -50,7 +50,6 @@ export function Sidebar() {
     if (targetWorkspace) {
       setActiveOrgId(targetWorkspace.id);
       setWorkspace(targetWorkspace.type);
-      // FIX: Use soft navigation so Zustand has ample time to flush its writes to localStorage
       router.push("/");
     }
   };

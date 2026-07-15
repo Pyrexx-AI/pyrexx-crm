@@ -60,7 +60,6 @@ export default function IntegrationsPage() {
   };
 
   const toggleAutomation = async () => {
-    // FIX: Include 'admin' in permissions check
     const isManager = ['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '');
     if (!isManager) {
       toast.error("Only managers can edit organization automations.");

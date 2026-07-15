@@ -9,6 +9,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const supabase = createClient();
   const router = useRouter();
   
+  // Extract all state and setters from our persisted global store
   const { 
     activeOrgId, setActiveOrgId, 
     currentWorkspace, setWorkspace, 
@@ -31,11 +32,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         
         if (!user) {
+          logger.info('AuthProvider', 'No active user found. Redirecting to login.');
           if (isMounted) setIsBootstrapping(false);
           return;
         }
 
-        // Fetch User Profile
+        // Fetch User Profile from public.users with fallback support
         const { data: profile, error: profileError } = await supabase.from('users').select('full_name, email').eq('id', user.id).maybeSingle();
         if (profileError) {
           logger.error('AuthProvider', 'Failed to fetch user profile', profileError);
@@ -45,7 +47,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUserName(profile?.full_name || fallbackName);
         setUserEmail(profile?.email || user.email || "");
 
-        // Fetch Memberships
+        // Fetch organization memberships
         const { data: memberships, error: membershipError } = await supabase
           .from('memberships')
           .select('role, org_id, organizations(id, name, type)')
@@ -57,6 +59,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (memberships && memberships.length > 0) {
           const availableWorkspaces: Workspace[] = [];
+          let targetOrgId = activeOrgId; 
           let agencyMembership: any = null;
 
           memberships.forEach((m: any) => {
@@ -73,38 +76,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
           setWorkspaces(availableWorkspaces);
 
-          // FIX: Read localStorage directly & synchronously. 
-          // This stops Next.js from triggering the fallback loop before Zustand has hydrated.
-          let savedOrgId = activeOrgId;
-          let savedWorkspace = currentWorkspace;
-
+          // Read localStorage synchronously to prevent Zustand hydration mismatch loops on Next.js boot
           try {
             const persistedData = localStorage.getItem('pyrexx-crm-storage');
             if (persistedData) {
               const parsed = JSON.parse(persistedData);
               if (parsed?.state?.activeOrgId) {
-                savedOrgId = parsed.state.activeOrgId;
-                savedWorkspace = parsed.state.currentWorkspace;
+                targetOrgId = parsed.state.activeOrgId;
               }
             }
           } catch (storageError) {
             logger.error('AuthProvider', 'Failed to parse localStorage', storageError);
           }
 
-          // Validate if the saved Org ID actually belongs to the user
-          const isSavedOrgValid = availableWorkspaces.find(w => w.id === savedOrgId);
+          const isSavedOrgValid = availableWorkspaces.find(w => w.id === targetOrgId);
 
-          if (isSavedOrgValid && savedOrgId) {
-            setActiveOrgId(savedOrgId);
-            setWorkspace(savedWorkspace);
-            
-            const currentMembership = memberships.find((m: any) => m.org_id === savedOrgId);
+          if (isSavedOrgValid && targetOrgId) {
+            setActiveOrgId(targetOrgId);
+            const currentMembership = memberships.find((m: any) => m.org_id === targetOrgId);
             setUser(user.id, currentMembership?.role || 'rep');
-            logger.info('AuthProvider', 'Restored validated workspace from storage', { savedOrgId, savedWorkspace });
+            logger.info('AuthProvider', 'Restored validated workspace from storage', { targetOrgId });
           } else {
             // Safe fallback if nothing is saved or the saved workspace is invalid
             const fallbackOrg = agencyMembership || memberships[0];
-            const fallbackType = fallbackOrg.organizations?.type || 'clinic';
+            
+            // FIX: Safely unwrap fallbackOrg's organizations to satisfy strict TS compilers
+            const resolvedOrg = Array.isArray(fallbackOrg.organizations) 
+              ? fallbackOrg.organizations[0] 
+              : fallbackOrg.organizations;
+              
+            const fallbackType = resolvedOrg?.type || 'clinic';
             
             setActiveOrgId(fallbackOrg.org_id);
             setWorkspace(fallbackType as 'agency' | 'clinic');
