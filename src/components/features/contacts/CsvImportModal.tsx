@@ -3,19 +3,20 @@ import React, { useState } from "react";
 import Papa from "papaparse";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
-import { Upload, AlertCircle, ArrowRight, CheckCircle2 } from "lucide-react";
+import { Upload, AlertCircle, ArrowRight, CheckCircle2, Plus } from "lucide-react";
 import { createClient } from "@/lib/supabase";
 import { useAppStore } from "@/store/useAppStore";
 import { toast } from "sonner";
 
 type Step = "UPLOAD" | "MAP" | "IMPORTING";
 
-// System fields we natively support
 const STANDARD_FIELDS = [
   { key: "first_name", label: "First Name" },
   { key: "last_name", label: "Last Name" },
+  { key: "full_name", label: "Full Name (Auto-Split)" }, // Supported for split logic
   { key: "email", label: "Email Address" },
   { key: "phone", label: "Phone Number" },
+  { key: "position", label: "Position / Job Title" },
   { key: "stage", label: "Pipeline Stage" },
 ];
 
@@ -27,15 +28,19 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
   const [file, setFile] = useState<File | null>(null);
   const [csvData, setCsvData] = useState<any[]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
-  
-  // Maps CSV Header -> DB Column (or "custom:fieldName")
   const [fieldMap, setFieldMap] = useState<Record<string, string>>({});
+  const [customFields, setCustomFields] = useState<any[]>([]);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
-    if (!selectedFile) return;
+    if (!selectedFile || !activeOrgId) return;
     
     setFile(selectedFile);
+
+    // Fetch existing custom field definitions
+    const { data: extFields } = await supabase.from("custom_field_definitions").select("key, name").eq("org_id", activeOrgId).eq("target_type", "contact");
+    setCustomFields(extFields || []);
+
     Papa.parse(selectedFile, {
       header: true,
       skipEmptyLines: true,
@@ -45,17 +50,55 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
           setHeaders(extractedHeaders);
           setCsvData(results.data);
           
-          // Auto-guess mapping based on exact string matches
+          // INTELLIGENT FUZZY AUTO-MAPPING
           const initialMap: Record<string, string> = {};
           extractedHeaders.forEach(h => {
-            const match = STANDARD_FIELDS.find(sf => sf.key.replace("_", "").toLowerCase() === h.replace(/[\s_]/g, "").toLowerCase());
-            initialMap[h] = match ? match.key : `custom:${h}`; // Default unknown columns to custom JSONB
+            const cleanHeader = h.toLowerCase().replace(/[\s_-]/g, "");
+            
+            if (["firstname", "fname", "first", "givenname"].includes(cleanHeader)) {
+              initialMap[h] = "first_name";
+            } else if (["lastname", "lname", "last", "surname"].includes(cleanHeader)) {
+              initialMap[h] = "last_name";
+            } else if (["fullname", "name", "contactname"].includes(cleanHeader)) {
+              initialMap[h] = "full_name";
+            } else if (["email", "mail", "emailaddress"].includes(cleanHeader)) {
+              initialMap[h] = "email";
+            } else if (["phone", "mobile", "cell", "tel", "number", "phonenumber"].includes(cleanHeader)) {
+              initialMap[h] = "phone";
+            } else if (["title", "position", "jobtitle", "role"].includes(cleanHeader)) {
+              initialMap[h] = "position";
+            } else if (["stage", "dealstage"].includes(cleanHeader)) {
+              initialMap[h] = "stage";
+            } else {
+              // Fallback to mapping as custom field
+              initialMap[h] = `custom:${cleanHeader}`;
+            }
           });
           setFieldMap(initialMap);
           setStep("MAP");
         }
       }
     });
+  };
+
+  const createCustomFieldOnTheFly = async (headerName: string) => {
+    if (!activeOrgId) return;
+    const cleanKey = headerName.toLowerCase().replace(/[\s-]/g, "_");
+
+    const { data: newDef, error } = await supabase.from("custom_field_definitions").insert({
+      org_id: activeOrgId,
+      target_type: "contact",
+      name: headerName,
+      key: cleanKey
+    }).select("key, name").single();
+
+    if (error) {
+      toast.error("Failed to register custom field.");
+    } else if (newDef) {
+      setCustomFields(prev => [...prev, newDef]);
+      setFieldMap(prev => ({ ...prev, [headerName]: `custom:${newDef.key}` }));
+      toast.success(`Registered '${headerName}' as a dynamic field.`);
+    }
   };
 
   const executeImport = async () => {
@@ -78,12 +121,17 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
         if (target.startsWith("custom:")) {
           const customKey = target.replace("custom:", "");
           contactRecord.custom_fields[customKey] = value;
+        } else if (target === "full_name" && value) {
+          // INTELLIGENT NAME SPLITTER
+          const nameParts = value.trim().split(/\s+/);
+          contactRecord.first_name = nameParts[0] || "Unknown";
+          contactRecord.last_name = nameParts.slice(1).join(" ") || "Contact";
         } else {
           contactRecord[target] = value;
         }
       });
 
-      // Enforce NOT NULL constraints safely
+      // Default safety
       contactRecord.first_name = contactRecord.first_name || "Unknown";
       contactRecord.last_name = contactRecord.last_name || "Contact";
       contactRecord.stage = contactRecord.stage || "New Lead";
@@ -91,7 +139,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
       return contactRecord;
     });
 
-    // Chunk inserts to prevent massive payload rejections
     const chunkSize = 100;
     let errorCount = 0;
 
@@ -102,12 +149,11 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
     }
 
     if (errorCount > 0) {
-      toast.error(`Import completed with ${errorCount} batch errors.`);
+      toast.error(`Import completed with errors in some batches.`);
     } else {
-      toast.success(`Successfully imported ${payload.length} contacts.`);
+      toast.success(`Successfully mapped and imported ${payload.length} contacts.`);
     }
 
-    // Reset and close
     setFile(null);
     setCsvData([]);
     setHeaders([]);
@@ -117,13 +163,13 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={() => { if(step !== "IMPORTING") onClose(); }} title="Import Contacts Wizard">
+    <Modal isOpen={isOpen} onClose={() => { if(step !== "IMPORTING") onClose(); }} title="Smart Import Wizard">
       
       {step === "UPLOAD" && (
         <div className="flex flex-col items-center justify-center border-2 border-dashed border-line rounded-xl p-8 bg-paperDim text-center">
           <Upload size={32} className="text-slate mb-3" />
-          <p className="text-sm text-ink font-medium mb-1">Select a CSV file to map</p>
-          <p className="text-xs text-slate mb-4">You will map columns in the next step.</p>
+          <p className="text-sm text-ink font-medium mb-1">Select your client/lead CSV list</p>
+          <p className="text-xs text-slate mb-4">The engine will auto-suggest matches and split full names.</p>
           <input 
             type="file" 
             accept=".csv"
@@ -136,7 +182,7 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
       {step === "MAP" && (
         <div className="flex flex-col max-h-[60vh]">
           <div className="mb-4 p-3 rounded-lg bg-sageSoft text-sage font-medium text-sm flex items-center gap-2">
-            <CheckCircle2 size={16} /> Found {csvData.length} rows. Map your columns below.
+            <CheckCircle2 size={16} /> Decoded {csvData.length} records. Confirm the matched fields below:
           </div>
           
           <div className="overflow-y-auto flex-1 pr-2 space-y-3">
@@ -145,32 +191,48 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
                 <div className="flex-1 text-sm font-medium text-ink truncate font-mono">
                   {header}
                   <div className="text-[10px] text-slate font-body truncate mt-1">
-                    Example: {csvData[0][header] || "—"}
+                    Preview: {csvData[0][header] || "—"}
                   </div>
                 </div>
                 <ArrowRight size={14} className="hidden sm:block text-slate" />
-                <select
-                  value={fieldMap[header]}
-                  onChange={(e) => setFieldMap(prev => ({ ...prev, [header]: e.target.value }))}
-                  className="flex-1 px-3 py-2 rounded-md text-sm outline-none bg-paperDim font-body text-ink border border-transparent focus:border-berry transition-all"
-                >
-                  <option value="skip">-- Skip this column --</option>
-                  <optgroup label="Standard Fields">
-                    {STANDARD_FIELDS.map(sf => (
-                      <option key={sf.key} value={sf.key}>{sf.label}</option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="Custom Data">
-                    <option value={`custom:${header}`}>Save as Custom Field: '{header}'</option>
-                  </optgroup>
-                </select>
+                
+                <div className="flex items-center gap-2 flex-1 w-full">
+                  <select
+                    value={fieldMap[header]}
+                    onChange={(e) => setFieldMap(prev => ({ ...prev, [header]: e.target.value }))}
+                    className="flex-1 px-3 py-2 rounded-md text-sm outline-none bg-paperDim font-body text-ink border border-transparent focus:border-berry transition-all"
+                  >
+                    <option value="skip">-- Skip this column --</option>
+                    <optgroup label="Standard Fields">
+                      {STANDARD_FIELDS.map(sf => (
+                        <option key={sf.key} value={sf.key}>{sf.label}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Custom Profile Data">
+                      {customFields.map(cf => (
+                        <option key={cf.key} value={`custom:${cf.key}`}>Map to Custom Field: '{cf.name}'</option>
+                      ))}
+                    </optgroup>
+                  </select>
+                  
+                  {fieldMap[header] === "skip" && (
+                    <button 
+                      type="button" 
+                      onClick={() => createCustomFieldOnTheFly(header)}
+                      className="p-2 rounded-md bg-paperDim border border-line text-slate hover:text-berry hover:border-berrySoft transition-all"
+                      title="Add as New Custom Field"
+                    >
+                      <Plus size={14} />
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
 
           <div className="flex justify-end gap-3 pt-4 border-t border-line mt-4">
             <Button type="button" variant="ghost" onClick={() => setStep("UPLOAD")}>Back</Button>
-            <Button onClick={executeImport}>Run Import</Button>
+            <Button onClick={executeImport}>Run Import & Split Names</Button>
           </div>
         </div>
       )}
@@ -179,7 +241,7 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
         <div className="flex flex-col items-center justify-center p-8 text-center">
           <div className="w-8 h-8 border-4 border-berry border-t-transparent rounded-full animate-spin mb-4" />
           <h3 className="text-lg font-medium text-ink font-body">Importing {csvData.length} contacts...</h3>
-          <p className="text-sm text-slate mt-2">Please do not close this window.</p>
+          <p className="text-sm text-slate mt-2">Processing CSV rows and saving data safely.</p>
         </div>
       )}
     </Modal>

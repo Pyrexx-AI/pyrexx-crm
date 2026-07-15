@@ -11,15 +11,19 @@ const emailProvider = new ResendProvider();
 
 export async function POST(req: Request) {
   try {
-    const { org_id, contact_id, sender_id, to, subject, content, htmlContent, attachments, from_slug } = await req.json();
+    const body = await req.json();
+    const { org_id, contact_id, sender_id, to, subject, content, htmlContent, attachments, from_slug } = body;
+
+    console.log("[Email API] Received dispatch request:", { org_id, contact_id, to, from_slug });
 
     if (!org_id || !contact_id || (!content && !htmlContent)) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    // Dynamic Email Domain defined in your .env.local
     const emailDomain = process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "crm.pyrexxai.com";
     const fromAddress = `${from_slug}@${emailDomain}`;
+
+    console.log("[Email API] Attempting send via provider...", { fromAddress, to });
 
     const emailResult = await emailProvider.sendEmail({
       to,
@@ -31,8 +35,11 @@ export async function POST(req: Request) {
     });
 
     if (emailResult.error) {
+      console.error("[Email API] Dispatch failed:", emailResult.error);
       return NextResponse.json({ error: emailResult.error }, { status: 500 });
     }
+
+    console.log("[Email API] Send success, updating database threads...");
 
     let { data: thread } = await supabase
       .from("threads")
@@ -55,12 +62,13 @@ export async function POST(req: Request) {
       thread_id: thread!.id,
       sender_id,
       direction: "outbound",
-      content: htmlContent || content, // Store rich HTML natively
+      content: htmlContent || content,
       attachments: attachments || []
     });
 
     return NextResponse.json({ success: true });
   } catch (err: any) {
+    console.error("[Email API Critical Crash]:", err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
