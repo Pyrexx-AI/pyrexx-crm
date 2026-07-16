@@ -35,7 +35,6 @@ export default function TeamSettingsPage() {
     
     logger.info('TeamSettingsPage', 'Fetching team members...');
     
-    // Selecting status column
     const { data, error } = await supabase
       .from("memberships")
       .select("role, status, created_at, users(id, full_name, email)")
@@ -118,7 +117,6 @@ export default function TeamSettingsPage() {
           }
         />
 
-        {/* Desktop Table */}
         <div className="hidden md:block rounded-xl overflow-x-auto border border-line bg-white shadow-card">
           <table className="w-full text-sm font-body min-w-[600px]">
             <thead className="bg-paperDim border-b border-line">
@@ -160,9 +158,9 @@ export default function TeamSettingsPage() {
                       )}
                     </td>
                     <td className="px-5 py-3">
-                      {/* UPGRADE: Display a pending badge if status is pending */}
-                      <Badge variant={m.status === 'active' ? 'sage' : 'amber'}>
-                        {m.status?.toUpperCase() || 'ACTIVE'}
+                      {/* Gracefully handle null statuses as active for UI display */}
+                      <Badge variant={m.status === 'active' || m.status === null ? 'sage' : 'amber'}>
+                        {m.status ? m.status.toUpperCase() : 'ACTIVE'}
                       </Badge>
                     </td>
                     <td className="px-5 py-3 text-right">
@@ -179,7 +177,6 @@ export default function TeamSettingsPage() {
           </table>
         </div>
 
-        {/* Mobile Stacked Cards */}
         <div className="md:hidden space-y-3">
           {members.map((m) => {
             const targetId = m.users?.id;
@@ -206,8 +203,8 @@ export default function TeamSettingsPage() {
                     </select>
                   ) : <span className="px-2 py-1 rounded text-xs uppercase font-medium bg-paperDim text-slate">{m.role}</span>}
                   
-                  <Badge variant={m.status === 'active' ? 'sage' : 'amber'}>
-                    {m.status?.toUpperCase() || 'ACTIVE'}
+                  <Badge variant={m.status === 'active' || m.status === null ? 'sage' : 'amber'}>
+                    {m.status ? m.status.toUpperCase() : 'ACTIVE'}
                   </Badge>
 
                   {isManager && !isSelf && (

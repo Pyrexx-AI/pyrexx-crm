@@ -32,14 +32,15 @@ export default function DashboardPage() {
     // 1. Fetch Deals
     const { data: deals } = await supabase.from("deals").select("*").eq("org_id", activeOrgId);
     
-    // 2. Fetch active memberships to filter the leaderboard
-    const { data: activeMembers } = await supabase
+    // 2. Fetch active memberships to filter the leaderboard (Allowing null for legacy owners)
+    const { data: allMembers } = await supabase
       .from("memberships")
-      .select("user_id")
-      .eq("org_id", activeOrgId)
-      .eq("status", "active"); // <-- Only evaluate active reps!
+      .select("user_id, status")
+      .eq("org_id", activeOrgId);
 
-    const activeMemberIds = activeMembers?.map(m => m.user_id) || [];
+    const activeMemberIds = allMembers
+      ?.filter(m => m.status === 'active' || m.status === null)
+      .map(m => m.user_id) || [];
 
     // 3. Fetch Recent Activities (Audit Log)
     const today = new Date();

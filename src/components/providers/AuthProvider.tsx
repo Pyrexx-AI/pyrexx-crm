@@ -16,8 +16,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const bootstrap = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser();
-        
-        // Use getState() to safely read/write to the store without triggering infinite loop dependencies
         const store = useAppStore.getState();
 
         if (!user) {
@@ -32,19 +30,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         store.setUserName(profile?.full_name || fallbackName);
         store.setUserEmail(profile?.email || user.email || "");
 
-        // 2. Fetch Active Workspace Memberships
+        // 2. Fetch Workspace Memberships (Removed .eq('status', 'active') to prevent legacy owner lockout)
         const { data: memberships } = await supabase
           .from('memberships')
           .select('role, org_id, status, organizations(id, name, type)')
-          .eq('user_id', user.id)
-          .eq('status', 'active'); 
+          .eq('user_id', user.id);
 
         if (memberships && memberships.length > 0) {
           const availableWorkspaces: Workspace[] = [];
           let agencyMembership: any = null;
 
-          memberships.forEach((m: any) => {
-            // Handle array unwrapping if PostgREST returns a joined array
+          // Treat 'active' and 'null' (legacy accounts) as active workspaces
+          const activeMemberships = memberships.filter(m => m.status === 'active' || m.status === null);
+
+          activeMemberships.forEach((m: any) => {
             const org = Array.isArray(m.organizations) ? m.organizations[0] : m.organizations;
             if (org) {
               availableWorkspaces.push({ 
@@ -80,21 +79,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
           if (isSavedOrgValid && targetOrgId) {
             store.setActiveOrgId(targetOrgId);
-            const currentMembership = memberships.find((m: any) => m.org_id === targetOrgId);
+            const currentMembership = activeMemberships.find((m: any) => m.org_id === targetOrgId);
             store.setUser(user.id, currentMembership?.role || 'rep');
           } else {
             // Safe fallback if their previous workspace was deleted or they are a brand new user
-            const fallbackOrg = agencyMembership || memberships[0];
-            const resolvedOrg = Array.isArray(fallbackOrg.organizations) 
-              ? fallbackOrg.organizations[0] 
-              : fallbackOrg.organizations;
-              
-            store.setActiveOrgId(fallbackOrg.org_id);
-            store.setWorkspace((resolvedOrg?.type as 'agency' | 'clinic') || 'clinic');
-            store.setUser(user.id, fallbackOrg.role);
+            const fallbackOrg = agencyMembership || activeMemberships[0];
+            if (fallbackOrg) {
+              const resolvedOrg = Array.isArray(fallbackOrg.organizations) 
+                ? fallbackOrg.organizations[0] 
+                : fallbackOrg.organizations;
+                
+              store.setActiveOrgId(fallbackOrg.org_id);
+              store.setWorkspace((resolvedOrg?.type as 'agency' | 'clinic') || 'clinic');
+              store.setUser(user.id, fallbackOrg.role);
+            } else {
+              // User has memberships, but they are all 'pending' (hasn't set password yet)
+              store.setUser(user.id, null);
+              store.setWorkspaces([]);
+              store.setActiveOrgId(null);
+            }
           }
         } else {
-          // User exists but has no active workspaces (e.g., they were removed from all teams)
+          // User exists but has no workspaces at all
           store.setUser(user.id, null);
           store.setWorkspaces([]);
           store.setActiveOrgId(null);
@@ -106,16 +112,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
-    // Initialize boot sequence on hard page load
     bootstrap();
 
     // Listen for Auth events to trigger state hydration dynamically
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-        // Crucial: Hydrates the profile instantly when they log in
         bootstrap();
       } else if (event === 'SIGNED_OUT') {
-        // Wipes the global state cleanly on logout
         const store = useAppStore.getState();
         store.setActiveOrgId(null);
         store.setUser(null, null);
@@ -130,7 +133,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isMounted = false;
       subscription.unsubscribe();
     };
-  }, [supabase, router]); // Clean dependencies prevent infinite re-render loops
+  }, [supabase, router]); 
 
   if (isBootstrapping) {
     return (
