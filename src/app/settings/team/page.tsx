@@ -24,11 +24,6 @@ export default function TeamSettingsPage() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("rep");
   const [isInviting, setIsInviting] = useState(false);
-  const [isMounted, setIsMounted] = useState(false);
-  
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
 
   const fetchTeam = async () => {
     if (!activeOrgId) return;
@@ -59,6 +54,7 @@ export default function TeamSettingsPage() {
     if (!inviteEmail || !activeOrgId) return;
     
     setIsInviting(true);
+    // Preserved the secure backend integration
     const res = await fetch("/api/team/invite", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -102,7 +98,8 @@ export default function TeamSettingsPage() {
     }
   };
 
-  const isManager = ['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '');
+  // RESTORED: Standard logic from the summary
+  const isManager = userRole === 'owner' || userRole === 'manager';
 
   return (
     <AppLayout>
@@ -111,7 +108,7 @@ export default function TeamSettingsPage() {
           eyebrow="Settings"
           title="Team Management" 
           action={
-            isMounted && isManager ? (
+            isManager ? (
               <Button icon={UserPlus} onClick={() => setIsInviteOpen(true)}>Invite Member</Button>
             ) : null
           }
@@ -158,8 +155,7 @@ export default function TeamSettingsPage() {
                       )}
                     </td>
                     <td className="px-5 py-3">
-                      {/* Gracefully handle null statuses as active for UI display */}
-                      <Badge variant={m.status === 'active' || m.status === null ? 'sage' : 'amber'}>
+                      <Badge variant={m.status === 'active' || !m.status ? 'sage' : 'amber'}>
                         {m.status ? m.status.toUpperCase() : 'ACTIVE'}
                       </Badge>
                     </td>
@@ -203,7 +199,7 @@ export default function TeamSettingsPage() {
                     </select>
                   ) : <span className="px-2 py-1 rounded text-xs uppercase font-medium bg-paperDim text-slate">{m.role}</span>}
                   
-                  <Badge variant={m.status === 'active' || m.status === null ? 'sage' : 'amber'}>
+                  <Badge variant={m.status === 'active' || !m.status ? 'sage' : 'amber'}>
                     {m.status ? m.status.toUpperCase() : 'ACTIVE'}
                   </Badge>
 

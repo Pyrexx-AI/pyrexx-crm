@@ -32,15 +32,14 @@ export default function DashboardPage() {
     // 1. Fetch Deals
     const { data: deals } = await supabase.from("deals").select("*").eq("org_id", activeOrgId);
     
-    // 2. Fetch active memberships to filter the leaderboard (Allowing null for legacy owners)
-    const { data: allMembers } = await supabase
+    // 2. RESTORED: Fetch active memberships to filter the leaderboard exactly as it was
+    const { data: activeMembers } = await supabase
       .from("memberships")
-      .select("user_id, status")
-      .eq("org_id", activeOrgId);
+      .select("user_id")
+      .eq("org_id", activeOrgId)
+      .eq("status", "active"); 
 
-    const activeMemberIds = allMembers
-      ?.filter(m => m.status === 'active' || m.status === null)
-      .map(m => m.user_id) || [];
+    const activeMemberIds = activeMembers?.map(m => m.user_id) || [];
 
     // 3. Fetch Recent Activities (Audit Log)
     const today = new Date();
@@ -65,7 +64,7 @@ export default function DashboardPage() {
         count: deals.filter(d => d.stage === stage).length
       }));
 
-      // 4. Compute Leaderboard (Filtered to active members only)
+      // 4. Compute Leaderboard
       const todaysActivities = activities.filter(
         a => new Date(a.created_at) >= today && activeMemberIds.includes(a.actor_id)
       );

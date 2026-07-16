@@ -8,42 +8,65 @@ import { logger } from '@/lib/logger';
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const supabase = createClient();
   const router = useRouter();
+  
+  const { 
+    activeOrgId, setActiveOrgId, 
+    currentWorkspace, setWorkspace, 
+    setUser, setUserName, setUserEmail, setWorkspaces 
+  } = useAppStore();
+  
   const [isBootstrapping, setIsBootstrapping] = useState(true);
 
   useEffect(() => {
     let isMounted = true;
 
     const bootstrap = async () => {
+      logger.info('AuthProvider', 'Starting bootstrap sequence...', { activeOrgId });
+      
       try {
-        const { data: { user } } = await supabase.auth.getUser();
-        const store = useAppStore.getState();
-
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        
+        if (authError) {
+          logger.error('AuthProvider', 'Auth Error on getUser', authError);
+        }
+        
         if (!user) {
+          logger.info('AuthProvider', 'No active user found. Redirecting to login.');
           if (isMounted) setIsBootstrapping(false);
           return;
         }
 
-        // 1. Fetch Profile Details
-        const { data: profile } = await supabase.from('users').select('full_name, email').eq('id', user.id).maybeSingle();
+        // Fetch user profile from public.users with fallback support
+        const { data: profile, error: profileError } = await supabase
+          .from('users')
+          .select('full_name, email')
+          .eq('id', user.id)
+          .maybeSingle();
+
+        if (profileError) {
+          logger.error('AuthProvider', 'Failed to fetch user profile', profileError);
+        }
         
         const fallbackName = user.email?.split('@')[0] || "User";
-        store.setUserName(profile?.full_name || fallbackName);
-        store.setUserEmail(profile?.email || user.email || "");
+        setUserName(profile?.full_name || fallbackName);
+        setUserEmail(profile?.email || user.email || "");
 
-        // 2. Fetch Workspace Memberships (Removed .eq('status', 'active') to prevent legacy owner lockout)
-        const { data: memberships } = await supabase
+        // Fetch organization memberships
+        const { data: memberships, error: membershipError } = await supabase
           .from('memberships')
-          .select('role, org_id, status, organizations(id, name, type)')
+          .select('role, org_id, organizations(id, name, type)')
           .eq('user_id', user.id);
+
+        if (membershipError) {
+          logger.error('AuthProvider', 'Failed to fetch memberships', membershipError);
+        }
 
         if (memberships && memberships.length > 0) {
           const availableWorkspaces: Workspace[] = [];
+          let targetOrgId = activeOrgId; 
           let agencyMembership: any = null;
 
-          // Treat 'active' and 'null' (legacy accounts) as active workspaces
-          const activeMemberships = memberships.filter(m => m.status === 'active' || m.status === null);
-
-          activeMemberships.forEach((m: any) => {
+          memberships.forEach((m: any) => {
             const org = Array.isArray(m.organizations) ? m.organizations[0] : m.organizations;
             if (org) {
               availableWorkspaces.push({ 
@@ -55,58 +78,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             }
           });
 
-          store.setWorkspaces(availableWorkspaces);
+          setWorkspaces(availableWorkspaces);
 
-          // 3. Resolve Active Organization (Hydration Fallback)
-          let targetOrgId = store.activeOrgId; 
-          
-          if (!targetOrgId) {
-            try {
-              const persistedData = localStorage.getItem('pyrexx-crm-storage');
-              if (persistedData) {
-                const parsed = JSON.parse(persistedData);
-                if (parsed?.state?.activeOrgId) {
-                  targetOrgId = parsed.state.activeOrgId;
-                }
+          // Read localStorage synchronously to prevent Zustand hydration mismatch loops on Next.js boot
+          try {
+            const persistedData = localStorage.getItem('pyrexx-crm-storage');
+            if (persistedData) {
+              const parsed = JSON.parse(persistedData);
+              if (parsed?.state?.activeOrgId) {
+                targetOrgId = parsed.state.activeOrgId;
               }
-            } catch (e) {
-              logger.error('AuthProvider', 'Storage parse error', e);
             }
+          } catch (storageError) {
+            logger.error('AuthProvider', 'Failed to parse localStorage', storageError);
           }
 
-          // Validate that the saved org actually exists in their current active memberships
           const isSavedOrgValid = availableWorkspaces.find(w => w.id === targetOrgId);
 
           if (isSavedOrgValid && targetOrgId) {
-            store.setActiveOrgId(targetOrgId);
-            const currentMembership = activeMemberships.find((m: any) => m.org_id === targetOrgId);
-            store.setUser(user.id, currentMembership?.role || 'rep');
+            setActiveOrgId(targetOrgId);
+            const currentMembership = memberships.find((m: any) => m.org_id === targetOrgId);
+            setUser(user.id, currentMembership?.role || 'rep');
+            logger.info('AuthProvider', 'Restored validated workspace from storage', { targetOrgId });
           } else {
-            // Safe fallback if their previous workspace was deleted or they are a brand new user
-            const fallbackOrg = agencyMembership || activeMemberships[0];
-            if (fallbackOrg) {
-              const resolvedOrg = Array.isArray(fallbackOrg.organizations) 
-                ? fallbackOrg.organizations[0] 
-                : fallbackOrg.organizations;
-                
-              store.setActiveOrgId(fallbackOrg.org_id);
-              store.setWorkspace((resolvedOrg?.type as 'agency' | 'clinic') || 'clinic');
-              store.setUser(user.id, fallbackOrg.role);
-            } else {
-              // User has memberships, but they are all 'pending' (hasn't set password yet)
-              store.setUser(user.id, null);
-              store.setWorkspaces([]);
-              store.setActiveOrgId(null);
-            }
+            const fallbackOrg = agencyMembership || memberships[0];
+            const resolvedOrg = Array.isArray(fallbackOrg.organizations) 
+              ? fallbackOrg.organizations[0] 
+              : fallbackOrg.organizations;
+              
+            const fallbackType = resolvedOrg?.type || 'clinic';
+            
+            setActiveOrgId(fallbackOrg.org_id);
+            setWorkspace(fallbackType as 'agency' | 'clinic');
+            setUser(user.id, fallbackOrg.role);
+            logger.info('AuthProvider', 'Fallback workspace assigned', { orgId: fallbackOrg.org_id });
           }
         } else {
-          // User exists but has no workspaces at all
-          store.setUser(user.id, null);
-          store.setWorkspaces([]);
-          store.setActiveOrgId(null);
+          setUser(user.id, null);
         }
-      } catch (error) {
-        logger.error('AuthProvider', 'Fatal error during bootstrap', error);
+      } catch (err) {
+        logger.error('AuthProvider', 'Fatal error during bootstrap', err);
       } finally {
         if (isMounted) setIsBootstrapping(false);
       }
@@ -114,17 +125,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     bootstrap();
 
-    // Listen for Auth events to trigger state hydration dynamically
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-        bootstrap();
-      } else if (event === 'SIGNED_OUT') {
-        const store = useAppStore.getState();
-        store.setActiveOrgId(null);
-        store.setUser(null, null);
-        store.setUserName(null);
-        store.setUserEmail(null);
-        store.setWorkspaces([]);
+      if (event === 'SIGNED_OUT') {
+        setActiveOrgId(null);
+        setUser(null, null);
+        setUserName(null);
+        setUserEmail(null);
+        setWorkspaces([]);
         router.push('/auth/login');
       }
     });
@@ -133,7 +140,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isMounted = false;
       subscription.unsubscribe();
     };
-  }, [supabase, router]); 
+  }, [supabase, activeOrgId, currentWorkspace, setActiveOrgId, setUser, setUserName, setUserEmail, setWorkspace, setWorkspaces, router]);
 
   if (isBootstrapping) {
     return (

@@ -47,6 +47,7 @@ package.json
 postcss.config.js
 README.md
 src/app/accounts/page.tsx
+src/app/api/auth/confirm-password/route.ts
 src/app/api/auth/reset-password/route.ts
 src/app/api/calender/sync/route.ts
 src/app/api/cron/automations/route.ts
@@ -113,103 +114,6 @@ vercel.json
 <files>
 This section contains the contents of the repository's files.
 
-<file path="src/app/api/auth/reset-password/route.ts">
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { ResendProvider } from "@/lib/email/ResendProvider";
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-export async function POST(req: Request) {
-  try {
-    const { email } = await req.json();
-
-    if (!email) {
-      return NextResponse.json({ error: "Missing email address" }, { status: 400 });
-    }
-
-    const cleanEmail = email.trim().toLowerCase();
-    const origin = req.headers.get("origin") || "https://crm.pyrexxai.com";
-    const redirectUrl = `${origin}/auth/update-password`;
-
-    console.log("[Reset Password API] Generating recovery link for:", { cleanEmail, redirectUrl });
-
-    // 1. Generate the secure recovery link via Admin API [21]
-    const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'recovery',
-      email: cleanEmail,
-      options: { redirectTo: redirectUrl }
-    });
-
-    if (linkError) {
-      console.error("[Reset Password API] Failed to generate recovery link:", linkError);
-      return NextResponse.json({ error: "Failed to generate security link: " + linkError.message }, { status: 500 });
-    }
-
-    const actionLink = linkData?.properties?.action_link;
-
-    if (!actionLink) {
-      return NextResponse.json({ error: "Failed to resolve secure action link." }, { status: 500 });
-    }
-
-    // 2. Fetch the root Pyrexx AI organization details to configure SMTP/Resend
-    const { data: org } = await supabaseAdmin
-      .from("organizations")
-      .select("name, slug, resend_api_key, sending_domain")
-      .eq("slug", "pyrexxai")
-      .single();
-
-    const activeProvider = new ResendProvider(org?.resend_api_key || undefined);
-    const emailDomain = org?.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "crm.pyrexxai.com";
-    const fromAddress = `security@${emailDomain}`;
-
-    const resetHtml = `
-      <div style="font-family: sans-serif; padding: 24px; max-width: 480px; border: 1px solid #E3E1DA; border-radius: 12px; background-color: #FFFFFF; box-shadow: 0px 4px 12px rgba(19, 20, 27, 0.03);">
-        <h2 style="color: #13141B; font-weight: 600; font-size: 20px; margin-top: 0;">Reset Your Password</h2>
-        <p style="color: #3A3D49; font-size: 14px; line-height: 1.5;">
-          We received a request to reset the password for your Pyrexx CRM account.
-        </p>
-        <p style="color: #3A3D49; font-size: 14px; line-height: 1.5; margin-bottom: 24px;">
-          Click the secure button below to establish a new password. This link is single-use and will expire shortly.
-        </p>
-        <div style="text-align: center;">
-          <a href="${actionLink}" style="background-color: #13141B; color: #F5F5F2; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 500; display: inline-block;">
-            Reset Password
-          </a>
-        </div>
-        <p style="color: #6B6E77; font-size: 11px; margin-top: 28px; line-height: 1.4; border-top: 1px solid #E3E1DA; padding-top: 16px; font-style: italic;">
-          If you did not request this change, you can safely ignore this email. Your credentials will remain secure.
-        </p>
-      </div>
-    `;
-
-    console.log("[Reset Password API] Sending custom email via Resend...", { fromAddress, to: cleanEmail });
-
-    const emailResult = await activeProvider.sendEmail({
-      to: cleanEmail,
-      from: fromAddress,
-      subject: "Reset your Pyrexx CRM password",
-      text: `Please reset your password using this link: ${actionLink}`,
-      html: resetHtml
-    });
-
-    if (emailResult.error) {
-      console.error("[Reset Password API] Email send failed:", emailResult.error);
-      return NextResponse.json({ error: `Security link generated, but Resend failed to dispatch email: ${emailResult.error}` }, { status: 500 });
-    }
-
-    console.log("[Reset Password API] Security email dispatched successfully.");
-    return NextResponse.json({ success: true });
-  } catch (err: any) {
-    console.error("[Reset Password API Exception]:", err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
-}
-</file>
-
 <file path=".env.example">
 # ==========================================
 # SUPABASE CONFIGURATION
@@ -275,113 +179,6 @@ module.exports = {
 # pyrexx-crm
 </file>
 
-<file path="src/app/accounts/page.tsx">
-"use client";
-import React, { useState, useEffect } from "react";
-import { AppLayout } from "@/components/layout/AppLayout";
-import { SectionTitle } from "@/components/ui/SectionTitle";
-import { Button } from "@/components/ui/Button";
-import { Badge } from "@/components/ui/Badge";
-import { UserPlus, MoreHorizontal } from "lucide-react";
-import { AccountFormModal } from "@/components/features/accounts/AccountFormModal";
-import { createClient } from "@/lib/supabase";
-import { Toaster } from "sonner";
-
-export default function AccountsPage() {
-  const supabase = createClient();
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [accounts, setAccounts] = useState<any[]>([]);
-
-  const fetchAccounts = async () => {
-    // Fetch organizations that are of type 'clinic' and where the current user is a member
-    const { data, error } = await supabase
-      .from("organizations")
-      .select("*")
-      .eq("type", "clinic")
-      .order("created_at", { ascending: false });
-      
-    if (!error && data) setAccounts(data);
-  };
-
-  useEffect(() => {
-    fetchAccounts();
-  }, []);
-
-  return (
-    <AppLayout>
-      <div className="p-4 md:p-8 max-w-5xl mx-auto">
-        <SectionTitle 
-          eyebrow="Agency Workspace · Owner"
-          title="Sub-accounts" 
-          action={
-            <Button icon={UserPlus} onClick={() => setIsModalOpen(true)}>
-              New Sub-Account
-            </Button>
-          } 
-        />
-
-        {/* Desktop Table */}
-        <div className="hidden md:block rounded-xl overflow-hidden border border-line bg-white shadow-card">
-          <table className="w-full text-sm font-body">
-            <thead className="bg-paperDim border-b border-line">
-              <tr>
-                {["Account", "Email address", "Plan", "Status", "Created", ""].map((h) => (
-                  <th key={h} className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em]">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {accounts.map((a) => (
-                <tr key={a.id} className="border-b border-line hover:bg-paperDim/50 transition-colors">
-                  <td className="px-5 py-3 font-medium text-ink">{a.name}</td>
-                  <td className="px-5 py-3 text-slate font-mono">{a.email_local_part}@crm.pyrexxai.com</td>
-                  <td className="px-5 py-3 text-slate">{a.plan}</td>
-                  <td className="px-5 py-3">
-                    <Badge variant={a.status === "Active" ? "sage" : "amber"}>{a.status}</Badge>
-                  </td>
-                  <td className="px-5 py-3 text-slate">
-                    {new Date(a.created_at).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}
-                  </td>
-                  <td className="px-5 py-3 text-right">
-                    <button className="text-slate hover:text-ink"><MoreHorizontal size={15} /></button>
-                  </td>
-                </tr>
-              ))}
-              {accounts.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="px-5 py-8 text-center text-slate font-body">No sub-accounts provisioned yet.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Mobile View */}
-        <div className="md:hidden space-y-3">
-          {accounts.map((a) => (
-            <div key={a.id} className="rounded-xl p-4 bg-white border border-line shadow-card">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-ink font-body">{a.name}</span>
-                <Badge variant={a.status === "Active" ? "sage" : "amber"}>{a.status}</Badge>
-              </div>
-              <div className="text-xs text-slate font-mono mb-1">{a.email_local_part}@crm.pyrexxai.com</div>
-              <div className="text-xs text-slate font-body">Plan: {a.plan}</div>
-            </div>
-          ))}
-        </div>
-
-        <AccountFormModal 
-          isOpen={isModalOpen} 
-          onClose={() => setIsModalOpen(false)} 
-          onSuccess={fetchAccounts}
-        />
-      </div>
-      <Toaster position="top-right" richColors />
-    </AppLayout>
-  );
-}
-</file>
-
 <file path="src/app/api/calender/sync/route.ts">
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
@@ -407,107 +204,6 @@ export async function POST(req: Request) {
     console.log(`[Calendar Bridge] Pushed event: "${title}" on ${dueDate} to ${user.calendar_provider}`);
 
     return NextResponse.json({ success: true });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
-}
-</file>
-
-<file path="src/app/api/cron/automations/route.ts">
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { ResendProvider } from "@/lib/email/ResendProvider";
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-const emailProvider = new ResendProvider();
-
-export async function GET(req: Request) {
-  try {
-    // 1. Verify Cron Secret to prevent unauthorized execution
-    const authHeader = req.headers.get('authorization');
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return new Response('Unauthorized', { status: 401 });
-    }
-
-    // 2. Find all active orgs that have the "Stale Proposal" automation turned ON
-    const { data: activeAutomations } = await supabase
-      .from("org_automations")
-      .select("org_id, organizations(slug)")
-      .eq("automation_key", "stale_proposal_followup")
-      .eq("is_active", true);
-
-    if (!activeAutomations || activeAutomations.length === 0) {
-      return NextResponse.json({ message: "No active automations found." });
-    }
-
-    const emailDomain = process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "crm.pyrexxai.com";
-    let emailsSent = 0;
-
-    // 3. Sweep Deals for each active org
-    for (const auto of activeAutomations) {
-      const orgId = auto.org_id;
-      // @ts-ignore - Supabase join typing
-      const orgSlug = auto.organizations?.slug;
-
-      const threeDaysAgo = new Date();
-      threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
-
-      // Find deals in "Proposal Sent" that haven't been updated in 3 days AND haven't been auto-followed up yet
-      const { data: staleDeals } = await supabase
-        .from("deals")
-        .select("id, name, contact_id, contacts(first_name, email)")
-        .eq("org_id", orgId)
-        .eq("stage", "Proposal Sent")
-        .lt("updated_at", threeDaysAgo.toISOString())
-        .is("last_auto_followup", null);
-
-      if (staleDeals && staleDeals.length > 0) {
-        for (const deal of staleDeals) {
-          const contact = deal.contacts as any;
-          if (!contact || !contact.email) continue;
-
-          // Dispatch Auto-Follow-Up Email
-          const fromAddress = `${orgSlug}@${emailDomain}`;
-          const content = `Hi ${contact.first_name},\n\nI wanted to float this to the top of your inbox. Did you have any questions regarding the proposal we sent over for ${deal.name}?\n\nBest,\nPyrexx Team`;
-
-          const emailResult = await emailProvider.sendEmail({
-            to: contact.email,
-            from: fromAddress,
-            subject: "Checking in on our proposal",
-            text: content,
-          });
-
-          if (!emailResult.error) {
-            emailsSent++;
-
-            // Ensure Thread exists
-            let threadId;
-            const { data: existingThread } = await supabase.from("threads").select("id").eq("org_id", orgId).eq("contact_id", deal.contact_id).single();
-            if (existingThread) {
-              threadId = existingThread.id;
-            } else {
-              const { data: newThread } = await supabase.from("threads").insert({ org_id: orgId, contact_id: deal.contact_id, channel: "email", subject: "Proposal Follow Up" }).select("id").single();
-              threadId = newThread!.id;
-            }
-
-            // Log Message
-            await supabase.from("messages").insert({ thread_id: threadId, direction: "outbound", content });
-
-            // Log Activity Timeline
-            await supabase.from("activities").insert({ org_id: orgId, contact_id: deal.contact_id, type: "note", content: "System triggered automated proposal follow-up email." });
-
-            // Mark deal so it doesn't get spammed tomorrow
-            await supabase.from("deals").update({ last_auto_followup: new Date().toISOString() }).eq("id", deal.id);
-          }
-        }
-      }
-    }
-
-    return NextResponse.json({ success: true, emailsSent });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
@@ -706,107 +402,6 @@ export default function PipelinePage() {
       </div>
       <Toaster position="top-right" richColors />
     </AppLayout>
-  );
-}
-</file>
-
-<file path="src/components/features/accounts/AccountFormModal.tsx">
-"use client";
-import React, { useState, useEffect } from "react";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import * as z from "zod";
-import { Modal } from "@/components/ui/Modal";
-import { Input } from "@/components/ui/Input";
-import { Button } from "@/components/ui/Button";
-import { createClient } from "@/lib/supabase";
-import { toast } from "sonner";
-
-const accountSchema = z.object({
-  name: z.string().min(1, "Clinic/Business name is required"),
-  slug: z.string().min(1, "Slug is required").regex(/^[a-z0-9-]+$/, "Lowercase letters, numbers, and hyphens only"),
-});
-
-type AccountFormValues = z.infer<typeof accountSchema>;
-
-export function AccountFormModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; onClose: () => void, onSuccess: () => void }) {
-  const supabase = createClient();
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  const { register, handleSubmit, formState: { errors }, reset, watch, setValue } = useForm<AccountFormValues>({
-    resolver: zodResolver(accountSchema),
-  });
-
-  const nameValue = watch("name");
-
-  // Auto-generate slug from name
-  useEffect(() => {
-    if (nameValue) {
-      const generatedSlug = nameValue
-        .toLowerCase()
-        .replace(/[^a-z0-9\s-]/g, "")
-        .trim()
-        .replace(/\s+/g, "-");
-      setValue("slug", generatedSlug, { shouldValidate: true });
-    }
-  }, [nameValue, setValue]);
-
-  const slugValue = watch("slug");
-
-  const onSubmit = async (data: AccountFormValues) => {
-    setIsSubmitting(true);
-    
-    // Call the Postgres RPC we created to handle atomic creation
-    const { data: orgId, error } = await supabase.rpc("create_sub_account", {
-      p_name: data.name,
-      p_slug: data.slug,
-      p_email_local_part: data.slug // Used for {slug}@crm.pyrexxai.com
-    });
-
-    setIsSubmitting(false);
-
-    if (error) {
-      toast.error("Failed to create sub-account", { description: error.message });
-    } else {
-      toast.success("Sub-account provisioned successfully!");
-      reset();
-      onSuccess();
-      onClose();
-    }
-  };
-
-  return (
-    <Modal isOpen={isOpen} onClose={onClose} title="New Sub-Account">
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-        <Input 
-          label="Clinic / Business Name" 
-          placeholder="e.g. Bloom Aesthetics MedSpa" 
-          {...register("name")} 
-          error={errors.name?.message} 
-          autoFocus 
-        />
-        
-        <Input 
-          label="Workspace Slug (Identifier)" 
-          {...register("slug")} 
-          error={errors.slug?.message} 
-        />
-
-        <div className="p-3 rounded-lg bg-paperDim border border-line text-xs font-body text-slate flex flex-col gap-1">
-          <p>This will provision an isolated workspace and inbox.</p>
-          <p>
-            Inbound Routing: <span className="font-mono font-medium text-ink">{slugValue || "slug"}@crm.pyrexxai.com</span>
-          </p>
-        </div>
-        
-        <div className="flex justify-end gap-3 pt-4 border-t border-line">
-          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? "Provisioning..." : "Create Account"}
-          </Button>
-        </div>
-      </form>
-    </Modal>
   );
 }
 </file>
@@ -1768,321 +1363,76 @@ export function cn(...inputs: ClassValue[]) {
 }
 </file>
 
-<file path="src/app/auth/login/page.tsx">
-"use client";
-import React, { useState, useEffect } from "react";
-import { PulseTrace } from "@/components/ui/PulseTrace";
-import { Input } from "@/components/ui/Input";
-import { Button } from "@/components/ui/Button";
-import { createClient } from "@/lib/supabase";
-import { useRouter } from "next/navigation";
-import { toast, Toaster } from "sonner";
+<file path="src/app/api/auth/confirm-password/route.ts">
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 
-const TELEMETRY_FEED = [
-  { time: "09:23:44", status: "positive", msg: "Inbound call: Bloom Aesthetics" },
-  { time: "09:23:45", status: "neutral", msg: "Greeting dispatched: 'Hi, thank you for calling...'" },
-  { time: "09:24:02", status: "positive", msg: "Intent identified: Booking Inquiry" },
-  { time: "09:24:15", status: "neutral", msg: "Slot verified: Thursday, 2:00 PM" },
-  { time: "09:24:22", status: "positive", msg: "Booking confirmed: Sarah Okafor (Botox Consult)" },
-  { time: "09:24:25", status: "neutral", msg: "SMS dispatch triggered successfully" },
-  { time: "09:25:01", status: "neutral", msg: "Inbound call: Calm Mind Therapy" },
-  { time: "09:25:12", status: "negative", msg: "Call Dropped (38s) - dropped call trigger active" },
-];
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
-export default function LoginPage() {
-  const supabase = createClient();
-  const router = useRouter();
-  
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [isForgotPassword, setIsForgotPassword] = useState(false);
-  const [visibleLogs, setVisibleLogs] = useState<any[]>([]);
+export async function POST(req: Request) {
+  try {
+    const { token, password } = await req.json();
 
-  useEffect(() => {
-    setVisibleLogs([TELEMETRY_FEED[0], TELEMETRY_FEED[1], TELEMETRY_FEED[2]]);
+    if (!token || !password) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    }
+
+    // 1. Validate the custom token (Removed the broken users() join)
+    const { data: tokenData, error: tokenError } = await supabaseAdmin
+      .from("auth_tokens")
+      .select("user_id, expires_at")
+      .eq("token", token)
+      .single();
+
+    if (tokenError || !tokenData) {
+      console.error("[Confirm Password API] Token lookup failed:", tokenError);
+      return NextResponse.json({ error: "Invalid or expired security token." }, { status: 400 });
+    }
+
+    // 2. Check Expiration
+    if (new Date(tokenData.expires_at) < new Date()) {
+      await supabaseAdmin.from("auth_tokens").delete().eq("token", token);
+      return NextResponse.json({ error: "This security link has expired." }, { status: 400 });
+    }
+
+    // 3. Fetch the user's email directly from the Auth system (most reliable source of truth)
+    const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.getUserById(tokenData.user_id);
     
-    let index = 3;
-    const interval = setInterval(() => {
-      setVisibleLogs(prev => {
-        const next = [...prev, TELEMETRY_FEED[index]];
-        if (next.length > 5) next.shift(); 
-        return next;
-      });
-      index = (index + 1) % TELEMETRY_FEED.length;
-    }, 4000);
+    if (authError || !authUser?.user) {
+      console.error("[Confirm Password API] Failed to resolve user account:", authError);
+      return NextResponse.json({ error: "Failed to resolve user account." }, { status: 500 });
+    }
 
-    return () => clearInterval(interval);
-  }, []);
+    const userEmail = authUser.user.email;
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
+    // 4. Forcefully update the password using the Admin API
+    const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(tokenData.user_id, { 
+      password: password 
     });
 
-    if (error) {
-      toast.error("Login failed", { description: error.message });
-      setIsLoading(false);
-    } else {
-      router.push("/");
-    }
-  };
-
-  const handleForgotPassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email) {
-      toast.error("Please enter your email address.");
-      return;
+    if (updateError) {
+      console.error("[Confirm Password API] Failed to update password:", updateError);
+      return NextResponse.json({ error: updateError.message }, { status: 500 });
     }
 
-    setIsLoading(true);
+    // 5. Activate all pending workspaces for this user
+    await supabaseAdmin
+      .from("memberships")
+      .update({ status: 'active' })
+      .eq("user_id", tokenData.user_id)
+      .eq("status", "pending");
 
-    // UPGRADE: Hit our new, custom server-side endpoint instead of Supabase client reset
-    const res = await fetch("/api/auth/reset-password", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email })
-    });
+    // 6. Delete the single-use token to prevent reuse
+    await supabaseAdmin.from("auth_tokens").delete().eq("token", token);
 
-    const data = await res.json();
-    setIsLoading(false);
-
-    if (res.ok) {
-      toast.success("Security reset link dispatched!", {
-        description: "Please check your inbox for instructions to set your password."
-      });
-      setIsForgotPassword(false);
-      setPassword("");
-    } else {
-      toast.error("Failed to send reset link", { description: data.error || "Unknown server error" });
-    }
-  };
-
-  return (
-    <div className="min-h-screen w-full flex bg-paper">
-      
-      <div className="flex-1 md:max-w-md lg:max-w-[480px] xl:max-w-[540px] flex flex-col justify-center px-8 sm:px-12 md:px-16 bg-white border-r border-line relative h-full min-h-screen">
-        <div className="w-full max-w-sm mx-auto">
-          <div className="flex flex-col mb-8">
-            <div className="md:hidden flex items-center gap-2 mb-4">
-              <PulseTrace sentiment="positive" size="sm" />
-              <span className="font-body font-bold text-ink text-[15px]">Pyrexx CRM</span>
-            </div>
-            <h1 className="font-display text-4xl text-ink leading-none">
-              {isForgotPassword ? "Reset Password" : "Welcome Back"}
-            </h1>
-            <p className="text-sm text-slate font-body mt-2">
-              {isForgotPassword 
-                ? "Enter your email to request a secure password update link." 
-                : "Enter your credentials to access your Pyrexx CRM operations."}
-            </p>
-          </div>
-
-          {isForgotPassword ? (
-            <form onSubmit={handleForgotPassword} className="space-y-4">
-              <Input 
-                label="Reset Email Address" 
-                type="email" 
-                placeholder="name@pyrexxai.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                autoFocus
-              />
-              <Button type="submit" className="w-full mt-2" disabled={isLoading}>
-                {isLoading ? "Dispatching..." : "Send Reset Link"}
-              </Button>
-              <div className="text-center pt-2">
-                <button 
-                  type="button" 
-                  onClick={() => setIsForgotPassword(false)} 
-                  className="text-xs text-slate hover:text-berry font-body transition-colors"
-                >
-                  Back to Sign In
-                </button>
-              </div>
-            </form>
-          ) : (
-            <form onSubmit={handleLogin} className="space-y-4">
-              <Input 
-                label="Email Address" 
-                type="email" 
-                placeholder="peter@pyrexxai.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-              <div className="relative w-full">
-                <Input 
-                  label="Password" 
-                  type="password" 
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
-                <button 
-                  type="button"
-                  onClick={() => setIsForgotPassword(true)}
-                  className="absolute right-0 top-0 text-[10px] text-slate hover:text-berry transition-colors font-body"
-                >
-                  Forgot?
-                </button>
-              </div>
-              <Button type="submit" className="w-full mt-2" disabled={isLoading}>
-                {isLoading ? "Authenticating..." : "Sign In"}
-              </Button>
-            </form>
-          )}
-        </div>
-      </div>
-
-      <div className="hidden md:flex flex-1 flex-col justify-between p-12 lg:p-16 bg-ink relative overflow-hidden">
-        <div className="absolute top-1/4 left-1/4 w-96 h-96 rounded-full bg-berry/10 filter blur-[80px] pointer-events-none" />
-        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 rounded-full bg-sage/5 filter blur-[100px] pointer-events-none" />
-
-        <div className="flex items-center justify-between z-10">
-          <div className="flex items-center gap-2">
-            <PulseTrace sentiment="positive" size="sm" />
-            <span className="font-body font-bold text-paper text-[15px]">Pyrexx CRM</span>
-          </div>
-          <span className="text-[10px] px-2 py-0.5 rounded bg-inkSoft text-slate font-mono border border-inkSoft">
-            Live Gateway: app.pyrexxai.com
-          </span>
-        </div>
-
-        <div className="max-w-xl my-auto z-10">
-          <h2 className="font-display text-[56px] text-paper leading-[1.05] tracking-tight">
-            The intelligent proxy connecting <span className="italic text-berry">voice agents</span> to medical records.
-          </h2>
-          <p className="text-sm text-slate font-body mt-4 leading-relaxed max-w-md">
-            Pyrexx AI securely captures, transcribes, and enriches every patient call, pushing structured data straight into clinic workflows.
-          </p>
-        </div>
-
-        <div className="rounded-xl bg-inkSoft border border-inkSoft/80 p-5 shadow-2xl max-w-xl w-full z-10 backdrop-blur-md">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-[10px] uppercase tracking-wide text-slate font-body font-semibold">Live Inbound Ingestion Loop</span>
-            <div className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-sage animate-ping" />
-              <span className="text-[10px] text-sage font-mono">STREAMING</span>
-            </div>
-          </div>
-          
-          <div className="space-y-2 font-mono text-xs">
-            {visibleLogs.map((log, idx) => (
-              <div key={idx} className="flex items-start gap-3 transition-opacity duration-500 animate-fadeIn">
-                <span className="text-slate text-[10px] w-14 flex-shrink-0">{log.time}</span>
-                <span className="text-paper flex-1 leading-normal">{log.msg}</span>
-                <PulseTrace sentiment={log.status} />
-              </div>
-            ))}
-          </div>
-        </div>
-
-      </div>
-
-      <Toaster position="top-right" richColors />
-    </div>
-  );
-}
-</file>
-
-<file path="src/app/auth/update-password/page.tsx">
-"use client";
-import React, { useState, useEffect } from "react";
-import { PulseTrace } from "@/components/ui/PulseTrace";
-import { Input } from "@/components/ui/Input";
-import { Button } from "@/components/ui/Button";
-import { createClient } from "@/lib/supabase";
-import { useRouter } from "next/navigation";
-import { useAppStore } from "@/store/useAppStore";
-import { toast, Toaster } from "sonner";
-
-export default function UpdatePasswordPage() {
-  const supabase = createClient();
-  const router = useRouter();
-  const { activeOrgId } = useAppStore();
-  
-  const [password, setPassword] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [isVerifying, setIsVerifying] = useState(true);
-  const [tempUserId, setTempUserId] = useState<string | null>(null);
-
-  useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user) {
-        toast.error("Invalid or expired invite link. Redirecting...");
-        setTimeout(() => router.push('/auth/login'), 2000);
-      } else {
-        setTempUserId(user.id);
-        setIsVerifying(false);
-      }
-    });
-  }, [router, supabase]);
-
-  const handleUpdate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (password.length < 6) {
-      toast.error("Password must be at least 6 characters.");
-      return;
-    }
-
-    setIsLoading(true);
-    const { error } = await supabase.auth.updateUser({ password });
-
-    if (error) {
-      toast.error("Failed to update password", { description: error.message });
-      setIsLoading(false);
-    } else {
-      // UPGRADE: Update the representative's membership status to ACTIVE
-      if (tempUserId && activeOrgId) {
-        await supabase
-          .from("memberships")
-          .update({ status: 'active' })
-          .eq("user_id", tempUserId)
-          .eq("org_id", activeOrgId);
-      }
-
-      toast.success("Password secured! Welcome to Pyrexx.");
-      setTimeout(() => router.push("/"), 1500);
-    }
-  };
-
-  if (isVerifying) {
-    return <div className="min-h-screen flex items-center justify-center bg-paperDim"><PulseTrace sentiment="neutral" size="lg" /></div>;
+    return NextResponse.json({ success: true, email: userEmail });
+  } catch (err: any) {
+    console.error("[Confirm Password API Exception]:", err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
-
-  return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-paperDim p-4">
-      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-line p-8">
-        <div className="flex flex-col items-center mb-8">
-          <PulseTrace sentiment="positive" size="lg" />
-          <h1 className="font-display text-2xl text-ink mt-4 text-center">Secure Your Account</h1>
-          <p className="text-sm text-slate font-body mt-1 text-center">Please set a permanent password for your Pyrexx CRM account.</p>
-        </div>
-
-        <form onSubmit={handleUpdate} className="space-y-4">
-          <Input 
-            label="New Password" 
-            type="password" 
-            placeholder="At least 6 characters"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            autoFocus
-          />
-          <Button type="submit" className="w-full mt-2" disabled={isLoading}>
-            {isLoading ? "Securing..." : "Save Password & Enter"}
-          </Button>
-        </form>
-      </div>
-      <Toaster position="top-center" richColors />
-    </div>
-  );
 }
 </file>
 
@@ -2364,6 +1714,106 @@ export default function ReportsPage() {
         </div>
       </div>
     </AppLayout>
+  );
+}
+</file>
+
+<file path="src/components/features/accounts/AccountFormModal.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
+import { Modal } from "@/components/ui/Modal";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { createClient } from "@/lib/supabase";
+import { toast } from "sonner";
+
+const accountSchema = z.object({
+  name: z.string().min(1, "Clinic/Business name is required"),
+  slug: z.string().min(1, "Slug is required").regex(/^[a-z0-9-]+$/, "Lowercase letters, numbers, and hyphens only"),
+});
+
+type AccountFormValues = z.infer<typeof accountSchema>;
+
+export function AccountFormModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; onClose: () => void, onSuccess: () => void }) {
+  const supabase = createClient();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const { register, handleSubmit, formState: { errors }, reset, watch, setValue } = useForm<AccountFormValues>({
+    resolver: zodResolver(accountSchema),
+  });
+
+  const nameValue = watch("name");
+
+  useEffect(() => {
+    if (nameValue) {
+      const generatedSlug = nameValue
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, "")
+        .trim()
+        .replace(/\s+/g, "-");
+      setValue("slug", generatedSlug, { shouldValidate: true });
+    }
+  }, [nameValue, setValue]);
+
+  const slugValue = watch("slug");
+
+  const onSubmit = async (data: AccountFormValues) => {
+    setIsSubmitting(true);
+    
+    const { data: orgId, error } = await supabase.rpc("create_sub_account", {
+      p_name: data.name,
+      p_slug: data.slug,
+      p_email_local_part: data.slug 
+    });
+
+    setIsSubmitting(false);
+
+    if (error) {
+      toast.error("Failed to create sub-account", { description: error.message });
+    } else {
+      toast.success("Sub-account provisioned successfully!");
+      reset();
+      onSuccess();
+      onClose();
+    }
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="New Sub-Account">
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <Input 
+          label="Clinic / Business Name" 
+          placeholder="e.g. Bloom Aesthetics MedSpa" 
+          {...register("name")} 
+          error={errors.name?.message} 
+          autoFocus 
+        />
+        
+        <Input 
+          label="Workspace Slug (Identifier)" 
+          {...register("slug")} 
+          error={errors.slug?.message} 
+        />
+
+        <div className="p-3 rounded-lg bg-paperDim border border-line text-xs font-body text-slate flex flex-col gap-1">
+          <p>This will provision an isolated workspace and inbox.</p>
+          <p>
+            {/* Visual fix for email display domain */}
+            Inbound Routing: <span className="font-mono font-medium text-ink">{slugValue || "slug"}@app.pyrexxai.com</span>
+          </p>
+        </div>
+        
+        <div className="flex justify-end gap-3 pt-4 border-t border-line">
+          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button type="submit" disabled={isSubmitting}>
+            {isSubmitting ? "Provisioning..." : "Create Account"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 </file>
@@ -2759,363 +2209,6 @@ export function ContactFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
 }
 </file>
 
-<file path="src/components/features/inbox/InboxThread.tsx">
-"use client";
-import React, { useState, useEffect, useRef } from "react";
-import { Avatar } from "@/components/ui/Avatar";
-import { Button } from "@/components/ui/Button";
-import { ChevronLeft, Send, Paperclip, FileText, X } from "lucide-react";
-import { createClient } from "@/lib/supabase";
-import { toast } from "sonner";
-import { RichTextEditor } from "@/components/ui/RichTextEditor";
-
-interface InboxThreadProps {
-  threadId: string;
-  contactId: string;
-  contactName: string;
-  contactEmail: string;
-  orgId: string;
-  orgSlug: string;
-  onBack: () => void;
-  userId: string;
-}
-
-export function InboxThread({ threadId, contactId, contactName, contactEmail, orgId, orgSlug, onBack, userId }: InboxThreadProps) {
-  const supabase = createClient();
-  const [messages, setMessages] = useState<any[]>([]);
-  const [htmlReply, setHtmlReply] = useState("");
-  const [textReply, setTextReply] = useState("");
-  const [isSending, setIsSending] = useState(false);
-  const [attachments, setAttachments] = useState<{ filename: string; path: string }[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
-  
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const endOfMessagesRef = useRef<HTMLDivElement>(null);
-
-  const fetchMessages = async () => {
-    const { data } = await supabase
-      .from("messages")
-      .select("*")
-      .eq("thread_id", threadId)
-      .order("created_at", { ascending: true });
-    if (data) setMessages(data);
-  };
-
-  useEffect(() => {
-    fetchMessages();
-    supabase.from("threads").update({ is_unread: false }).eq("id", threadId).then();
-    
-    const channel = supabase
-      .channel("messages_channel")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `thread_id=eq.${threadId}` }, () => {
-        fetchMessages();
-      })
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
-  }, [threadId]);
-
-  // Auto-scroll to bottom on new message
-  useEffect(() => {
-    endOfMessagesRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    
-    setIsUploading(true);
-    const newAttachments = [...attachments];
-
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
-      const filePath = `${orgId}/${fileName}`;
-
-      const { error: uploadError } = await supabase.storage.from('attachments').upload(filePath, file);
-      
-      if (!uploadError) {
-        const { data } = supabase.storage.from('attachments').getPublicUrl(filePath);
-        newAttachments.push({ filename: file.name, path: data.publicUrl });
-      } else {
-        toast.error(`Failed to upload ${file.name}`);
-      }
-    }
-
-    setAttachments(newAttachments);
-    setIsUploading(false);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  const removeAttachment = (index: number) => {
-    setAttachments(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const handleSend = async () => {
-    if (!textReply.trim() && attachments.length === 0) return;
-    setIsSending(true);
-
-    const res = await fetch("/api/email/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        org_id: orgId,
-        contact_id: contactId,
-        sender_id: userId,
-        to: contactEmail,
-        content: textReply,
-        htmlContent: htmlReply,
-        attachments: attachments,
-        from_slug: orgSlug
-      })
-    });
-
-    if (res.ok) {
-      // Because TipTap doesn't easily wipe externally without a ref, we reset our local state
-      // Real implementation might force a key re-render on the editor
-      setHtmlReply("");
-      setTextReply("");
-      setAttachments([]);
-      fetchMessages();
-    } else {
-      toast.error("Failed to send email");
-    }
-    setIsSending(false);
-  };
-
-  return (
-    <div className="flex-1 flex flex-col h-full bg-paper relative">
-      <div className="px-4 md:px-8 py-4 flex items-center gap-3 border-b border-line bg-paper z-10 flex-shrink-0">
-        <button onClick={onBack} className="md:hidden text-ink">
-          <ChevronLeft size={18} />
-        </button>
-        <Avatar name={contactName} size={32} />
-        <div>
-          <div className="text-sm font-medium text-ink font-body">{contactName}</div>
-          <div className="text-xs text-slate font-body">{contactEmail}</div>
-        </div>
-      </div>
-
-      {/* Message Feed Area */}
-      <div className="flex-1 px-4 md:px-8 py-6 space-y-4 overflow-y-auto min-h-0">
-        {messages.map((msg) => {
-          const isOutbound = msg.direction === "outbound";
-          return (
-            <div key={msg.id} className={`flex flex-col ${isOutbound ? "items-end" : "items-start"}`}>
-              <div 
-                className={`max-w-md w-full rounded-xl p-4 text-sm font-body ${
-                  isOutbound 
-                    ? "bg-ink text-paper rounded-tr-sm" 
-                    : "bg-white text-ink rounded-tl-sm border border-line shadow-sm"
-                }`}
-              >
-                {/* Render Rich HTML safely */}
-                <div 
-                  dangerouslySetInnerHTML={{ __html: msg.content }} 
-                  className={`prose prose-sm max-w-none ${isOutbound ? 'prose-invert' : ''} [&>p]:m-0 [&>p]:mb-2 last:[&>p]:mb-0`} 
-                />
-
-                {/* Render Attachments if any */}
-                {msg.attachments && msg.attachments.length > 0 && (
-                  <div className={`mt-3 pt-3 border-t flex flex-col gap-2 ${isOutbound ? 'border-inkSoft' : 'border-line'}`}>
-                    {msg.attachments.map((att: any, i: number) => (
-                      <a 
-                        key={i} 
-                        href={att.path} 
-                        target="_blank" 
-                        rel="noreferrer"
-                        className={`flex items-center gap-2 text-xs p-2 rounded-lg transition-colors ${
-                          isOutbound ? 'bg-inkSoft hover:bg-ink600 text-paper' : 'bg-paperDim hover:bg-[#E0DFDA] text-ink'
-                        }`}
-                      >
-                        <FileText size={14} className={isOutbound ? 'text-slate' : 'text-berry'} />
-                        <span className="truncate">{att.filename}</span>
-                      </a>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <span className="text-[10px] text-slate font-mono mt-1">
-                {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </span>
-            </div>
-          );
-        })}
-        <div ref={endOfMessagesRef} />
-      </div>
-
-      {/* Compose Area */}
-      <div className="px-4 md:px-8 py-4 border-t border-line bg-paper flex-shrink-0">
-        
-        {/* Attachment Previews */}
-        {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-2 mb-3">
-            {attachments.map((att, i) => (
-              <div key={i} className="flex items-center gap-2 bg-white border border-line px-2 py-1.5 rounded-md text-xs font-body text-ink shadow-sm">
-                <FileText size={12} className="text-berry" />
-                <span className="max-w-[120px] truncate">{att.filename}</span>
-                <button onClick={() => removeAttachment(i)} className="text-slate hover:text-berry ml-1">
-                  <X size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="flex items-end gap-3">
-          <div className="flex-1">
-            <RichTextEditor 
-              content={htmlReply} 
-              onChange={(html, text) => { setHtmlReply(html); setTextReply(text); }} 
-            />
-          </div>
-          
-          <div className="flex flex-col gap-2 mb-1">
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              className="hidden" 
-              multiple 
-              onChange={handleFileUpload} 
-            />
-            <button 
-              onClick={() => fileInputRef.current?.click()} 
-              disabled={isUploading}
-              className="w-10 h-10 rounded-full flex items-center justify-center bg-white border border-line text-slate hover:text-ink hover:border-berry transition-colors shadow-sm disabled:opacity-50"
-            >
-              {isUploading ? <div className="w-4 h-4 border-2 border-slate border-t-transparent rounded-full animate-spin" /> : <Paperclip size={16} />}
-            </button>
-            <Button 
-              onClick={handleSend} 
-              disabled={isSending || (!textReply.trim() && attachments.length === 0)} 
-              className="w-10 h-10 rounded-full p-0 flex items-center justify-center shadow-sm"
-            >
-              <Send size={16} className={(textReply.trim() || attachments.length > 0) ? "translate-x-[1px] translate-y-[-1px]" : ""} />
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="src/components/features/pipeline/NextActionModal.tsx">
-"use client";
-import React, { useState, useEffect } from "react";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import * as z from "zod";
-import { Modal } from "@/components/ui/Modal";
-import { Input } from "@/components/ui/Input";
-import { Button } from "@/components/ui/Button";
-import { createClient } from "@/lib/supabase";
-import { useAppStore } from "@/store/useAppStore";
-import { toast } from "sonner";
-
-const nextActionSchema = z.object({
-  title: z.string().min(1, "You must specify the next action to take"),
-  due_date: z.string().min(1, "You must set a due date"),
-  sync_calendar: z.boolean().optional(),
-});
-
-type NextActionValues = z.infer<typeof nextActionSchema>;
-
-interface NextActionModalProps {
-  isOpen: boolean;
-  dealId: string;
-  contactId: string;
-  newStage: string;
-  onCancel: () => void;
-  onSuccess: () => void;
-}
-
-export function NextActionModal({ isOpen, dealId, contactId, newStage, onCancel, onSuccess }: NextActionModalProps) {
-  const supabase = createClient();
-  const { activeOrgId, userId } = useAppStore();
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [hasCalendar, setHasCalendar] = useState(false);
-
-  const { register, handleSubmit, formState: { errors }, reset } = useForm<NextActionValues>({
-    resolver: zodResolver(nextActionSchema),
-    defaultValues: { sync_calendar: true }
-  });
-
-  useEffect(() => {
-    if (isOpen && userId) {
-      supabase.from("users").select("calendar_connected").eq("id", userId).single().then(({ data }) => setHasCalendar(!!data?.calendar_connected));
-    }
-  }, [isOpen, userId, supabase]);
-
-  const onSubmit = async (data: NextActionValues) => {
-    if (!activeOrgId || !userId) return;
-    setIsSubmitting(true);
-
-    const { error: dealError } = await supabase
-      .from("deals")
-      .update({ stage: newStage, next_action: data.title, updated_at: new Date().toISOString() })
-      .eq("id", dealId);
-
-    if (dealError) {
-      toast.error("Failed to move deal");
-      setIsSubmitting(false);
-      return;
-    }
-
-    await supabase.from("tasks").insert({
-      org_id: activeOrgId,
-      contact_id: contactId,
-      assignee_id: userId,
-      title: data.title,
-      due_date: data.due_date,
-      is_completed: false
-    });
-
-    if (data.sync_calendar && hasCalendar) {
-      await fetch("/api/calendar/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, title: data.title, dueDate: data.due_date })
-      });
-    }
-
-    setIsSubmitting(false);
-    toast.success("Deal advanced and task created!");
-    reset();
-    onSuccess();
-  };
-
-  return (
-    <Modal isOpen={isOpen} onClose={onCancel} title="Enforce Next Action">
-      <div className="mb-4 p-3 rounded-lg bg-paperDim border border-line text-sm text-ink font-body">
-        You are moving this deal to <span className="font-semibold text-berry">{newStage}</span>. 
-        To prevent deals from going stale, you must set a follow-up action.
-      </div>
-
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-        <Input label="What is the next action?" placeholder="e.g. Call to confirm pricing details" {...register("title")} error={errors.title?.message} autoFocus />
-        <Input label="Due Date" type="date" {...register("due_date")} error={errors.due_date?.message} />
-        
-        {hasCalendar && (
-          <div className="flex items-center gap-2 mt-2">
-            <input type="checkbox" id="sync_calendar_deal" {...register("sync_calendar")} className="w-4 h-4 text-berry rounded border-line focus:ring-berry" />
-            <label htmlFor="sync_calendar_deal" className="text-sm text-ink font-body">Add to connected calendar</label>
-          </div>
-        )}
-
-        <div className="flex justify-end gap-3 pt-4 border-t border-line mt-2">
-          <Button type="button" variant="ghost" onClick={onCancel}>Cancel Move</Button>
-          <Button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? "Saving..." : "Confirm & Move Deal"}
-          </Button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-</file>
-
 <file path="src/components/features/pipeline/PipelineCard.tsx">
 "use client";
 import React from "react";
@@ -3178,60 +2271,6 @@ export function PipelineCard({ deal, onClick }: PipelineCardProps) {
           <span className="font-medium">Next:</span> {deal.next_action}
         </div>
       )}
-    </div>
-  );
-}
-</file>
-
-<file path="src/components/features/pipeline/PipelineColumn.tsx">
-"use client";
-import React from "react";
-import { useDroppable } from "@dnd-kit/core";
-import { PipelineCard } from "./PipelineCard";
-
-interface PipelineColumnProps {
-  stage: string;
-  deals: any[];
-  onDealClick: (deal: any) => void;
-  hiddenCount?: number; // <-- Added to show "Archived" count
-}
-
-export function PipelineColumn({ stage, deals, onDealClick, hiddenCount = 0 }: PipelineColumnProps) {
-  const { setNodeRef, isOver } = useDroppable({ id: stage });
-
-  const stageColorMap: Record<string, string> = {
-    "New Lead": "#6B6E77",
-    "Demo Scheduled": "#D69A32",
-    "Proposal Sent": "#D69A32",
-    "Contract Sent": "#AF3358",
-    "Onboarding": "#AF3358",
-    "Active Client": "#4C8A67",
-  };
-
-  const stageColor = stageColorMap[stage] || "#6B6E77";
-  // The value is calculated off the sliced array so UI matches the displayed cards
-  const stageValue = deals.reduce((sum, d) => sum + Number(d.value), 0);
-
-  return (
-    <div className="w-[85vw] sm:w-[280px] flex-shrink-0 snap-start flex flex-col h-full max-h-full">
-      <div className="pt-2 pb-3 px-1 mb-2 sticky top-0 bg-paper z-10" style={{ borderTop: `3px solid ${stageColor}` }}>
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-sm font-medium text-ink font-body uppercase tracking-[0.05em]">{stage}</span>
-          <span className="text-xs text-slate font-mono bg-paperDim px-1.5 py-0.5 rounded">{deals.length + hiddenCount}</span>
-        </div>
-        <div className="text-xs text-slate font-mono">${stageValue.toLocaleString()}</div>
-      </div>
-      
-      <div ref={setNodeRef} className={`space-y-3 min-h-[150px] p-1.5 rounded-lg transition-colors flex-1 overflow-y-auto pb-6 ${isOver ? "bg-paperDim/80 border border-dashed border-slate/50" : "bg-transparent border border-transparent"}`}>
-        {deals.map(deal => (
-          <PipelineCard key={deal.id} deal={deal} onClick={onDealClick} />
-        ))}
-        {hiddenCount > 0 && (
-          <div className="text-center p-3 text-xs text-slate font-body bg-paperDim/50 rounded-lg border border-dashed border-line">
-            + {hiddenCount} older deals archived
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -3604,372 +2643,430 @@ export const config = {
 }
 </file>
 
-<file path="src/app/api/email/inbound/route.ts">
+<file path="src/app/accounts/page.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { SectionTitle } from "@/components/ui/SectionTitle";
+import { Button } from "@/components/ui/Button";
+import { Badge } from "@/components/ui/Badge";
+import { UserPlus, MoreHorizontal } from "lucide-react";
+import { AccountFormModal } from "@/components/features/accounts/AccountFormModal";
+import { createClient } from "@/lib/supabase";
+import { useAppStore } from "@/store/useAppStore";
+import { Toaster } from "sonner";
+
+export default function AccountsPage() {
+  const supabase = createClient();
+  const { activeOrgId } = useAppStore();
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [accounts, setAccounts] = useState<any[]>([]);
+
+  const fetchAccounts = async () => {
+    if (!activeOrgId) return;
+
+    const { data, error } = await supabase
+      .from("organizations")
+      .select("*")
+      .eq("type", "clinic")
+      .eq("parent_org_id", activeOrgId)
+      .order("created_at", { ascending: false });
+      
+    if (!error && data) setAccounts(data);
+  };
+
+  useEffect(() => {
+    fetchAccounts();
+  }, [activeOrgId]);
+
+  return (
+    <AppLayout>
+      <div className="p-4 md:p-8 max-w-5xl mx-auto">
+        <SectionTitle 
+          eyebrow="Agency Workspace · Owner"
+          title="Sub-accounts" 
+          action={
+            <Button icon={UserPlus} onClick={() => setIsModalOpen(true)}>
+              New Sub-Account
+            </Button>
+          } 
+        />
+
+        <div className="hidden md:block rounded-xl overflow-hidden border border-line bg-white shadow-card">
+          <table className="w-full text-sm font-body">
+            <thead className="bg-paperDim border-b border-line">
+              <tr>
+                {["Account", "Email address", "Plan", "Status", "Created", ""].map((h) => (
+                  <th key={h} className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em]">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {accounts.map((a) => (
+                <tr key={a.id} className="border-b border-line hover:bg-paperDim/50 transition-colors">
+                  <td className="px-5 py-3 font-medium text-ink">{a.name}</td>
+                  {/* Visual fix for email display domain */}
+                  <td className="px-5 py-3 text-slate font-mono">{a.email_local_part}@app.pyrexxai.com</td>
+                  <td className="px-5 py-3 text-slate">{a.plan}</td>
+                  <td className="px-5 py-3">
+                    <Badge variant={a.status === "Active" ? "sage" : "amber"}>{a.status}</Badge>
+                  </td>
+                  <td className="px-5 py-3 text-slate">
+                    {new Date(a.created_at).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}
+                  </td>
+                  <td className="px-5 py-3 text-right">
+                    <button className="text-slate hover:text-ink"><MoreHorizontal size={15} /></button>
+                  </td>
+                </tr>
+              ))}
+              {accounts.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-5 py-8 text-center text-slate font-body">No sub-accounts provisioned yet.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="md:hidden space-y-3">
+          {accounts.map((a) => (
+            <div key={a.id} className="rounded-xl p-4 bg-white border border-line shadow-card">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-medium text-ink font-body">{a.name}</span>
+                <Badge variant={a.status === "Active" ? "sage" : "amber"}>{a.status}</Badge>
+              </div>
+              <div className="text-xs text-slate font-mono mb-1">{a.email_local_part}@app.pyrexxai.com</div>
+              <div className="text-xs text-slate font-body">Plan: {a.plan}</div>
+            </div>
+          ))}
+        </div>
+
+        <AccountFormModal 
+          isOpen={isModalOpen} 
+          onClose={() => setIsModalOpen(false)} 
+          onSuccess={fetchAccounts}
+        />
+      </div>
+      <Toaster position="top-right" richColors />
+    </AppLayout>
+  );
+}
+</file>
+
+<file path="src/app/api/cron/automations/route.ts">
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { ResendProvider } from "@/lib/email/ResendProvider";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-export async function POST(req: Request) {
+const emailProvider = new ResendProvider();
+
+export async function GET(req: Request) {
   try {
-    const payload = await req.json();
-    const emailData = payload.data || payload; 
-    const { from, to, subject, text, html } = emailData;
-
-    console.log("[Inbound Webhook] Received email packet:", { from, to, subject });
-
-    if (!from || !to) {
-      return NextResponse.json({ error: "Missing to/from addresses" }, { status: 400 });
+    const authHeader = req.headers.get('authorization');
+    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+      return new Response('Unauthorized', { status: 401 });
     }
 
-    const toAddress = Array.isArray(to) ? to[0] : to;
-    const localPart = toAddress.split("@")[0].toLowerCase();
+    const { data: activeAutomations } = await supabase
+      .from("org_automations")
+      .select("org_id, organizations(slug)")
+      .eq("automation_key", "stale_proposal_followup")
+      .eq("is_active", true);
 
-    // UPGRADE: Use pop() to safely isolate the last segment in a multi-dot rep name
-    // E.g., peter.gambo.pyrexxai -> "pyrexxai"
-    let slug = localPart;
-    if (localPart.includes(".")) {
-      const parts = localPart.split(".");
-      slug = parts.pop() || localPart;
+    if (!activeAutomations || activeAutomations.length === 0) {
+      return NextResponse.json({ message: "No active automations found." });
     }
 
-    console.log("[Inbound Webhook] Resolving organization via slug:", { localPart, resolvedSlug: slug });
+    // Fallback updated to app.pyrexxai.com
+    const emailDomain = process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "app.pyrexxai.com";
+    let emailsSent = 0;
 
-    const { data: org } = await supabase.from("organizations").select("id").eq("slug", slug).single();
-    if (!org) {
-      console.error("[Inbound Webhook] Organization slug lookup failed:", { slug });
-      return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
+    for (const auto of activeAutomations) {
+      const orgId = auto.org_id;
+      // @ts-ignore
+      const orgSlug = auto.organizations?.slug;
+
+      const threeDaysAgo = new Date();
+      threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+
+      const { data: staleDeals } = await supabase
+        .from("deals")
+        .select("id, name, contact_id, contacts(first_name, email)")
+        .eq("org_id", orgId)
+        .eq("stage", "Proposal Sent")
+        .lt("updated_at", threeDaysAgo.toISOString())
+        .is("last_auto_followup", null);
+
+      if (staleDeals && staleDeals.length > 0) {
+        const emailPromises = staleDeals.map(async (deal) => {
+          const contact = deal.contacts as any;
+          if (!contact || !contact.email) return;
+
+          const fromAddress = `${orgSlug}@${emailDomain}`;
+          const content = `Hi ${contact.first_name},\n\nI wanted to float this to the top of your inbox. Did you have any questions regarding the proposal we sent over for ${deal.name}?\n\nBest,\nPyrexx Team`;
+
+          const emailResult = await emailProvider.sendEmail({
+            to: contact.email,
+            from: fromAddress,
+            subject: "Checking in on our proposal",
+            text: content,
+          });
+
+          if (!emailResult.error) {
+            emailsSent++;
+
+            let threadId;
+            const { data: existingThread } = await supabase.from("threads").select("id").eq("org_id", orgId).eq("contact_id", deal.contact_id).single();
+            if (existingThread) {
+              threadId = existingThread.id;
+            } else {
+              const { data: newThread } = await supabase.from("threads").insert({ org_id: orgId, contact_id: deal.contact_id, channel: "email", subject: "Proposal Follow Up" }).select("id").single();
+              threadId = newThread!.id;
+            }
+
+            await Promise.all([
+              supabase.from("messages").insert({ thread_id: threadId, direction: "outbound", content }),
+              supabase.from("activities").insert({ org_id: orgId, contact_id: deal.contact_id, type: "note", content: "System triggered automated proposal follow-up email." }),
+              supabase.from("deals").update({ last_auto_followup: new Date().toISOString() }).eq("id", deal.id)
+            ]);
+          }
+        });
+
+        await Promise.allSettled(emailPromises);
+      }
     }
 
-    const senderEmailMatch = from.match(/<(.+)>/);
-    const senderEmail = senderEmailMatch ? senderEmailMatch[1].toLowerCase() : from.toLowerCase();
-    
-    let contactId = null;
-    const { data: existingContact } = await supabase
-      .from("contacts")
-      .select("id")
-      .eq("org_id", org.id)
-      .eq("email", senderEmail)
-      .single();
-
-    if (existingContact) {
-      contactId = existingContact.id;
-    } else {
-      console.log("[Inbound Webhook] Contact not found, auto-creating lead...", { senderEmail });
-      const { data: newContact } = await supabase.from("contacts").insert({
-        org_id: org.id,
-        first_name: senderEmail.split("@")[0], 
-        last_name: "Inquiry",
-        email: senderEmail,
-        type: "lead",
-        stage: "New Lead"
-      }).select("id").single();
-      contactId = newContact!.id;
-    }
-
-    let threadId = null;
-    const { data: existingThread } = await supabase
-      .from("threads")
-      .select("id")
-      .eq("org_id", org.id)
-      .eq("contact_id", contactId)
-      .eq("channel", "email")
-      .single();
-
-    if (existingThread) {
-      threadId = existingThread.id;
-    } else {
-      console.log("[Inbound Webhook] Active conversation thread not found, provisioning...");
-      const { data: newThread } = await supabase.from("threads").insert({
-        org_id: org.id,
-        contact_id: contactId,
-        channel: "email",
-        subject: subject || "Inbound Conversation"
-      }).select("id").single();
-      threadId = newThread!.id;
-    }
-
-    const { error: insertError } = await supabase.from("messages").insert({
-      thread_id: threadId,
-      direction: "inbound",
-      content: text || html || "Empty Message content"
-    });
-
-    if (insertError) {
-      console.error("[Inbound Webhook] Failed to write message to database:", insertError);
-      return NextResponse.json({ error: "Failed to log message." }, { status: 500 });
-    }
-
-    console.log("[Inbound Webhook] Message logged successfully. Realtime listeners updated.");
-    return NextResponse.json({ success: true });
-  } catch (error: any) {
-    console.error("[Inbound Webhook Critical Exception]:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ success: true, emailsSent });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
 </file>
 
-<file path="src/app/contacts/[id]/page.tsx">
+<file path="src/app/auth/login/page.tsx">
 "use client";
 import React, { useState, useEffect } from "react";
-import { AppLayout } from "@/components/layout/AppLayout";
-import { Avatar } from "@/components/ui/Avatar";
-import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
+import { PulseTrace } from "@/components/ui/PulseTrace";
 import { Input } from "@/components/ui/Input";
-import { ChevronLeft, Mail, Phone, Building2, CheckCircle2, Circle, Edit3, Trash2, X, Save } from "lucide-react";
+import { Button } from "@/components/ui/Button";
 import { createClient } from "@/lib/supabase";
-import { useParams, useRouter } from "next/navigation";
-import { useAppStore } from "@/store/useAppStore";
+import { useRouter } from "next/navigation";
 import { toast, Toaster } from "sonner";
 
-export default function ContactDetailPage() {
-  const { id } = useParams();
-  const router = useRouter();
-  const supabase = createClient();
-  const { activeOrgId, userId, userRole } = useAppStore();
-  
-  const [contact, setContact] = useState<any>(null);
-  const [tasks, setTasks] = useState<any[]>([]);
-  const [timeline, setTimeline] = useState<any[]>([]);
-  const [noteContent, setNoteContent] = useState("");
-  const [isSavingNote, setIsSavingNote] = useState(false);
+const TELEMETRY_FEED = [
+  { time: "09:23:44", status: "positive", msg: "Inbound call: Bloom Aesthetics" },
+  { time: "09:23:45", status: "neutral", msg: "Greeting dispatched: 'Hi, thank you for calling...'" },
+  { time: "09:24:02", status: "positive", msg: "Intent identified: Booking Inquiry" },
+  { time: "09:24:15", status: "neutral", msg: "Slot verified: Thursday, 2:00 PM" },
+  { time: "09:24:22", status: "positive", msg: "Booking confirmed: Sarah Okafor (Botox Consult)" },
+  { time: "09:24:25", status: "neutral", msg: "SMS dispatch triggered successfully" },
+  { time: "09:25:01", status: "neutral", msg: "Inbound call: Calm Mind Therapy" },
+  { time: "09:25:12", status: "negative", msg: "Call Dropped (38s) - dropped call trigger active" },
+];
 
-  // Edit Mode State
-  const [isEditing, setIsEditing] = useState(false);
-  const [editForm, setEditForm] = useState({ first_name: "", last_name: "", email: "", phone: "" });
-  const [isSavingEdit, setIsSavingEdit] = useState(false);
+export default function LoginPage() {
+  const supabase = createClient();
+  const router = useRouter();
+  
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [isForgotPassword, setIsForgotPassword] = useState(false);
+  const [visibleLogs, setVisibleLogs] = useState<any[]>([]);
 
   useEffect(() => {
-    if (activeOrgId && id) fetchData();
-  }, [activeOrgId, id]);
-
-  const fetchData = async () => {
-    const { data: contactData } = await supabase.from("contacts").select("*, deals(value)").eq("id", id).single();
+    setVisibleLogs([TELEMETRY_FEED[0], TELEMETRY_FEED[1], TELEMETRY_FEED[2]]);
     
-    if (contactData) {
-      const dealValue = contactData.deals?.reduce((sum: number, d: any) => sum + Number(d.value), 0) || 0;
-      setContact({ ...contactData, total_value: dealValue });
-      setEditForm({
-        first_name: contactData.first_name || "",
-        last_name: contactData.last_name || "",
-        email: contactData.email || "",
-        phone: contactData.phone || ""
+    let index = 3;
+    const interval = setInterval(() => {
+      setVisibleLogs(prev => {
+        const next = [...prev, TELEMETRY_FEED[index]];
+        if (next.length > 5) next.shift(); 
+        return next;
       });
-    } else {
-      toast.error("Contact not found");
-      router.push("/contacts");
-    }
+      index = (index + 1) % TELEMETRY_FEED.length;
+    }, 4000);
 
-    const { data: tasksData } = await supabase.from("tasks").select("*").eq("contact_id", id).eq("is_completed", false).order("due_date", { ascending: true });
-    if (tasksData) setTasks(tasksData);
+    return () => clearInterval(interval);
+  }, []);
 
-    const { data: activities } = await supabase.from("activities").select("*, users(full_name)").eq("contact_id", id);
-    let mergedTimeline = (activities || []).map(a => ({
-      id: a.id,
-      date: new Date(a.created_at),
-      type: a.type, 
-      content: a.content,
-      actor: a.users?.full_name || "System"
-    }));
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
 
-    mergedTimeline.sort((a, b) => b.date.getTime() - a.date.getTime());
-    setTimeline(mergedTimeline);
-  };
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
 
-  const handleSaveEdit = async () => {
-    setIsSavingEdit(true);
-    const { error } = await supabase.from("contacts").update({
-      first_name: editForm.first_name,
-      last_name: editForm.last_name,
-      email: editForm.email,
-      phone: editForm.phone,
-      updated_at: new Date().toISOString()
-    }).eq("id", id);
-
-    setIsSavingEdit(false);
     if (error) {
-      toast.error("Failed to update contact");
+      toast.error("Login failed", { description: error.message });
+      setIsLoading(false);
     } else {
-      toast.success("Contact updated!");
-      setIsEditing(false);
-      fetchData();
+      router.push("/");
     }
   };
 
-  const handleDeleteContact = async () => {
-    if (!window.confirm("Are you sure you want to delete this contact? This will permanently delete all their deals, tasks, and history.")) return;
-    
-    const { error } = await supabase.from("contacts").delete().eq("id", id);
-    if (error) {
-      toast.error("Failed to delete contact");
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email) {
+      toast.error("Please enter your email address.");
+      return;
+    }
+
+    setIsLoading(true);
+
+    // UPGRADE: Hit our new, custom server-side endpoint instead of Supabase client reset
+    const res = await fetch("/api/auth/reset-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
+    });
+
+    const data = await res.json();
+    setIsLoading(false);
+
+    if (res.ok) {
+      toast.success("Security reset link dispatched!", {
+        description: "Please check your inbox for instructions to set your password."
+      });
+      setIsForgotPassword(false);
+      setPassword("");
     } else {
-      toast.success("Contact deleted");
-      router.push("/contacts");
+      toast.error("Failed to send reset link", { description: data.error || "Unknown server error" });
     }
   };
-
-  const handleSaveNote = async () => {
-    if (!noteContent.trim() || !activeOrgId || !userId) return;
-    setIsSavingNote(true);
-    const { error } = await supabase.from("activities").insert({ org_id: activeOrgId, contact_id: id, actor_id: userId, type: "note", content: noteContent });
-    setIsSavingNote(false);
-    if (error) toast.error("Failed to save note");
-    else { toast.success("Note added"); setNoteContent(""); fetchData(); }
-  };
-
-  const toggleTask = async (taskId: string) => {
-    setTasks(prev => prev.filter(t => t.id !== taskId)); 
-    await supabase.from("tasks").update({ is_completed: true }).eq("id", taskId);
-    toast.success("Task completed");
-  };
-
-  const handleEmailClick = async () => {
-    if (!activeOrgId || !contact?.id) return;
-    const { data: existingThread } = await supabase.from("threads").select("id").eq("org_id", activeOrgId).eq("contact_id", contact.id).eq("channel", "email").single();
-    if (existingThread) {
-      router.push(`/inbox?threadId=${existingThread.id}`);
-    } else {
-      const { data: newThread, error } = await supabase.from("threads").insert({ org_id: activeOrgId, contact_id: contact.id, channel: "email", subject: `Conversation with ${contact.first_name}` }).select("id").single();
-      if (!error && newThread) router.push(`/inbox?threadId=${newThread.id}`);
-    }
-  };
-
-  if (!contact) return (
-    <AppLayout><div className="h-full flex items-center justify-center"><div className="animate-spin w-6 h-6 border-2 border-berry border-t-transparent rounded-full" /></div></AppLayout>
-  );
 
   return (
-    <AppLayout>
-      <div className="p-4 md:p-8 max-w-5xl mx-auto">
-        <button onClick={() => router.push('/contacts')} className="flex items-center gap-1 text-sm mb-6 text-slate font-body hover:text-ink transition-colors">
-          <ChevronLeft size={15} /> Back to Contacts
-        </button>
+    <div className="min-h-screen w-full flex bg-paper">
+      
+      <div className="flex-1 md:max-w-md lg:max-w-[480px] xl:max-w-[540px] flex flex-col justify-center px-8 sm:px-12 md:px-16 bg-white border-r border-line relative h-full min-h-screen">
+        <div className="w-full max-w-sm mx-auto">
+          <div className="flex flex-col mb-8">
+            <div className="md:hidden flex items-center gap-2 mb-4">
+              <PulseTrace sentiment="positive" size="sm" />
+              <span className="font-body font-bold text-ink text-[15px]">Pyrexx CRM</span>
+            </div>
+            <h1 className="font-display text-4xl text-ink leading-none">
+              {isForgotPassword ? "Reset Password" : "Welcome Back"}
+            </h1>
+            <p className="text-sm text-slate font-body mt-2">
+              {isForgotPassword 
+                ? "Enter your email to request a secure password update link." 
+                : "Enter your credentials to access your Pyrexx CRM operations."}
+            </p>
+          </div>
 
-        <div className="flex items-start gap-4 mb-8 flex-wrap justify-between">
-          <div className="flex items-start gap-4 flex-1 min-w-[250px]">
-            <Avatar name={`${contact.first_name} ${contact.last_name}`} size={64} />
-            <div className="flex-1">
-              {isEditing ? (
-                <div className="flex gap-2 mb-2">
-                  <input value={editForm.first_name} onChange={e => setEditForm({...editForm, first_name: e.target.value})} className="font-display text-[32px] text-ink leading-tight w-full bg-paperDim border border-line rounded px-2 outline-none focus:border-berry" placeholder="First Name" />
-                  <input value={editForm.last_name} onChange={e => setEditForm({...editForm, last_name: e.target.value})} className="font-display text-[32px] text-ink leading-tight w-full bg-paperDim border border-line rounded px-2 outline-none focus:border-berry" placeholder="Last Name" />
-                </div>
-              ) : (
-                <h1 className="font-display text-[32px] text-ink leading-tight">{contact.first_name} {contact.last_name}</h1>
-              )}
-              <div className="flex items-center gap-2 mt-2 flex-wrap">
-                <Badge variant="slate">{contact.stage}</Badge>
-                {contact.type === 'patient' && <Badge variant="sage">Patient</Badge>}
+          {isForgotPassword ? (
+            <form onSubmit={handleForgotPassword} className="space-y-4">
+              <Input 
+                label="Reset Email Address" 
+                type="email" 
+                placeholder="name@pyrexxai.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoFocus
+              />
+              <Button type="submit" className="w-full mt-2" disabled={isLoading}>
+                {isLoading ? "Dispatching..." : "Send Reset Link"}
+              </Button>
+              <div className="text-center pt-2">
+                <button 
+                  type="button" 
+                  onClick={() => setIsForgotPassword(false)} 
+                  className="text-xs text-slate hover:text-berry font-body transition-colors"
+                >
+                  Back to Sign In
+                </button>
               </div>
+            </form>
+          ) : (
+            <form onSubmit={handleLogin} className="space-y-4">
+              <Input 
+                label="Email Address" 
+                type="email" 
+                placeholder="peter@pyrexxai.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+              <div className="relative w-full">
+                <Input 
+                  label="Password" 
+                  type="password" 
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+                <button 
+                  type="button"
+                  onClick={() => setIsForgotPassword(true)}
+                  className="absolute right-0 top-0 text-[10px] text-slate hover:text-berry transition-colors font-body"
+                >
+                  Forgot?
+                </button>
+              </div>
+              <Button type="submit" className="w-full mt-2" disabled={isLoading}>
+                {isLoading ? "Authenticating..." : "Sign In"}
+              </Button>
+            </form>
+          )}
+        </div>
+      </div>
+
+      <div className="hidden md:flex flex-1 flex-col justify-between p-12 lg:p-16 bg-ink relative overflow-hidden">
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 rounded-full bg-berry/10 filter blur-[80px] pointer-events-none" />
+        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 rounded-full bg-sage/5 filter blur-[100px] pointer-events-none" />
+
+        <div className="flex items-center justify-between z-10">
+          <div className="flex items-center gap-2">
+            <PulseTrace sentiment="positive" size="sm" />
+            <span className="font-body font-bold text-paper text-[15px]">Pyrexx CRM</span>
+          </div>
+          <span className="text-[10px] px-2 py-0.5 rounded bg-inkSoft text-slate font-mono border border-inkSoft">
+            Live Gateway: app.pyrexxai.com
+          </span>
+        </div>
+
+        <div className="max-w-xl my-auto z-10">
+          <h2 className="font-display text-[56px] text-paper leading-[1.05] tracking-tight">
+            The intelligent proxy connecting <span className="italic text-berry">voice agents</span> to medical records.
+          </h2>
+          <p className="text-sm text-slate font-body mt-4 leading-relaxed max-w-md">
+            Pyrexx AI securely captures, transcribes, and enriches every patient call, pushing structured data straight into clinic workflows.
+          </p>
+        </div>
+
+        <div className="rounded-xl bg-inkSoft border border-inkSoft/80 p-5 shadow-2xl max-w-xl w-full z-10 backdrop-blur-md">
+          <div className="flex items-center justify-between mb-4">
+            <span className="text-[10px] uppercase tracking-wide text-slate font-body font-semibold">Live Inbound Ingestion Loop</span>
+            <div className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-sage animate-ping" />
+              <span className="text-[10px] text-sage font-mono">STREAMING</span>
             </div>
           </div>
           
-          <div className="flex gap-2 items-center">
-            {isEditing ? (
-              <>
-                <Button variant="ghost" onClick={() => setIsEditing(false)}><X size={16} /> Cancel</Button>
-                <Button onClick={handleSaveEdit} disabled={isSavingEdit}>{isSavingEdit ? "Saving..." : <><Save size={16} /> Save</>}</Button>
-              </>
-            ) : (
-              <>
-                {(userRole === 'owner' || userRole === 'manager') && (
-                  <button onClick={handleDeleteContact} className="p-2 text-slate hover:text-berry transition-colors rounded-lg hover:bg-berrySoft/50" title="Delete Contact">
-                    <Trash2 size={18} />
-                  </button>
-                )}
-                <Button variant="outline" icon={Edit3} onClick={() => setIsEditing(true)}>Edit</Button>
-                <Button variant="outline" icon={Phone}>Call</Button>
-                <Button variant="outline" icon={Mail} onClick={handleEmailClick}>Email</Button>
-              </>
-            )}
+          <div className="space-y-2 font-mono text-xs">
+            {visibleLogs.map((log, idx) => (
+              <div key={idx} className="flex items-start gap-3 transition-opacity duration-500 animate-fadeIn">
+                <span className="text-slate text-[10px] w-14 flex-shrink-0">{log.time}</span>
+                <span className="text-paper flex-1 leading-normal">{log.msg}</span>
+                <PulseTrace sentiment={log.status} />
+              </div>
+            ))}
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
-          <div className="md:col-span-2 space-y-6">
-            <div className="rounded-xl p-5 bg-white border border-line shadow-sm">
-              <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Contact Details</div>
-              <div className="space-y-3">
-                <div className="flex justify-between items-center text-sm">
-                  <span className="text-slate font-body">Email</span>
-                  {isEditing ? (
-                    <input value={editForm.email} onChange={e => setEditForm({...editForm, email: e.target.value})} className="bg-paperDim border border-line rounded px-2 py-1 outline-none focus:border-berry text-right w-2/3" />
-                  ) : (
-                    <span className="text-ink font-body font-medium">{contact.email || "—"}</span>
-                  )}
-                </div>
-                <div className="flex justify-between items-center text-sm">
-                  <span className="text-slate font-body">Phone</span>
-                  {isEditing ? (
-                    <input value={editForm.phone} onChange={e => setEditForm({...editForm, phone: e.target.value})} className="bg-paperDim border border-line rounded px-2 py-1 outline-none focus:border-berry text-right font-mono w-2/3" />
-                  ) : (
-                    <span className="text-ink font-mono font-medium">{contact.phone || "—"}</span>
-                  )}
-                </div>
-                <div className="flex justify-between items-center text-sm">
-                  <span className="text-slate font-body">Total Pipeline Value</span>
-                  <span className="text-ink font-mono font-medium text-sage">${contact.total_value.toLocaleString()}</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-xl p-5 bg-white border border-line shadow-sm">
-              <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Open Tasks</div>
-              {tasks.length === 0 ? (
-                <div className="text-sm text-slate font-body">No open tasks.</div>
-              ) : (
-                <div className="space-y-3">
-                  {tasks.map(t => (
-                    <div key={t.id} className="flex items-start gap-2.5">
-                      <button onClick={() => toggleTask(t.id)} className="mt-0.5 text-slate hover:text-sage transition-colors"><Circle size={15} /></button>
-                      <div>
-                        <div className="text-sm text-ink font-body font-medium leading-tight">{t.title}</div>
-                        <div className="text-[10px] text-berry font-mono mt-0.5">Due: {new Date(t.due_date).toLocaleDateString()}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="md:col-span-3 flex flex-col h-full">
-            <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Activity Timeline</div>
-            <div className="rounded-xl p-4 bg-white border border-line shadow-sm mb-6 flex flex-col gap-3">
-              <textarea value={noteContent} onChange={(e) => setNoteContent(e.target.value)} placeholder="Log a note..." className="w-full text-sm outline-none resize-none font-body text-ink placeholder:text-slate bg-transparent h-16" />
-              <div className="flex justify-between items-center border-t border-line pt-3">
-                <div className="flex gap-2 text-slate"><button className="hover:text-ink"><Edit3 size={15} /></button></div>
-                <Button onClick={handleSaveNote} disabled={isSavingNote || !noteContent.trim()}>{isSavingNote ? "Saving..." : "Save Note"}</Button>
-              </div>
-            </div>
-
-            <div className="relative pl-6 flex-1">
-              <div className="absolute left-[11px] top-2 bottom-0 w-px bg-line" />
-              {timeline.map((item, idx) => (
-                <div key={idx} className="relative mb-6">
-                  <div className="absolute -left-6 top-1 w-5 h-5 rounded-full flex items-center justify-center bg-paperDim border border-line z-10">
-                    {item.type === 'note' ? <Edit3 size={10} className="text-slate" /> : <CheckCircle2 size={10} className="text-berry" />}
-                  </div>
-                  <div className="rounded-xl p-4 bg-white border border-line shadow-sm">
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="text-sm font-medium text-ink font-body">{item.type === 'note' ? `${item.actor} left a note` : "Stage Change"}</span>
-                      <span className="text-[10px] text-slate font-mono">{item.date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
-                    </div>
-                    <div className="text-sm text-ink600 font-body whitespace-pre-wrap leading-relaxed">{item.content}</div>
-                  </div>
-                </div>
-              ))}
-              {timeline.length === 0 && <div className="text-sm text-slate font-body ml-2">No activity recorded yet.</div>}
-            </div>
-          </div>
-        </div>
       </div>
+
       <Toaster position="top-right" richColors />
-    </AppLayout>
+    </div>
   );
 }
 </file>
@@ -4108,6 +3205,1174 @@ export default function InboxPage() {
 }
 </file>
 
+<file path="src/app/settings/profile/page.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { SectionTitle } from "@/components/ui/SectionTitle";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { createClient } from "@/lib/supabase";
+import { toast, Toaster } from "sonner";
+import { useAppStore } from "@/store/useAppStore";
+
+export default function ProfileSettingsPage() {
+  const supabase = createClient();
+  const { userId, userName, userEmail, setUserName } = useAppStore();
+  
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isSavingAuth, setIsSavingAuth] = useState(false);
+
+  useEffect(() => {
+    if (userName) setFullName(userName);
+    if (userEmail) setEmail(userEmail);
+  }, [userName, userEmail]);
+
+  const handleUpdateProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!userId) {
+      toast.error("User session not found.");
+      return;
+    }
+    
+    setIsSavingProfile(true);
+
+    // FIX: Changed .update to .upsert to guarantee it saves even if the row is missing
+    const { error } = await supabase.from("users").upsert({ 
+      id: userId, 
+      full_name: fullName 
+    });
+    
+    setIsSavingProfile(false);
+    if (error) {
+      toast.error("Failed to update profile.", { description: error.message });
+    } else {
+      toast.success("Profile updated successfully.");
+      setUserName(fullName);
+    }
+  };
+
+  const handleUpdateSecurity = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingAuth(true);
+
+    const updates: any = {};
+    if (email && email !== userEmail) updates.email = email;
+    if (password) updates.password = password;
+
+    const { error } = await supabase.auth.updateUser(updates);
+
+    setIsSavingAuth(false);
+    if (error) {
+      toast.error("Security update failed", { description: error.message });
+    } else {
+      toast.success("Security credentials updated! Please verify your new email if changed.");
+      setPassword("");
+    }
+  };
+
+  return (
+    <AppLayout>
+      <div className="p-4 md:p-8 max-w-3xl mx-auto flex-1 w-full">
+        <SectionTitle eyebrow="Settings" title="Personal Profile" />
+
+        <div className="space-y-6 mt-6">
+          <div className="rounded-xl p-6 border border-line bg-white shadow-card">
+            <h2 className="text-lg font-medium text-ink font-body mb-4">Public Information</h2>
+            <form onSubmit={handleUpdateProfile} className="space-y-4 max-w-md">
+              <Input 
+                label="Full Name" 
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+              />
+              <Button type="submit" disabled={isSavingProfile}>
+                {isSavingProfile ? "Saving..." : "Save Profile"}
+              </Button>
+            </form>
+          </div>
+
+          <div className="rounded-xl p-6 border border-line bg-white shadow-card">
+            <h2 className="text-lg font-medium text-ink font-body mb-4">Security & Authentication</h2>
+            <p className="text-xs text-slate font-body mb-4 max-w-md">
+              Updating your email will require you to verify the new address. Updating your password will log out all other active sessions.
+            </p>
+            <form onSubmit={handleUpdateSecurity} className="space-y-4 max-w-md">
+              <Input 
+                label="Login Email" 
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+              <Input 
+                label="New Password" 
+                type="password"
+                placeholder="Leave blank to keep current password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <Button type="submit" disabled={isSavingAuth} variant="outline">
+                {isSavingAuth ? "Securing..." : "Update Security Credentials"}
+              </Button>
+            </form>
+          </div>
+        </div>
+      </div>
+      <Toaster position="top-right" richColors />
+    </AppLayout>
+  );
+}
+</file>
+
+<file path="src/components/features/inbox/InboxThread.tsx">
+"use client";
+import React, { useState, useEffect, useRef } from "react";
+import { Avatar } from "@/components/ui/Avatar";
+import { Button } from "@/components/ui/Button";
+import { ChevronLeft, Send, Paperclip, FileText, X } from "lucide-react";
+import { createClient } from "@/lib/supabase";
+import { toast } from "sonner";
+import { RichTextEditor } from "@/components/ui/RichTextEditor";
+
+interface InboxThreadProps {
+  threadId: string;
+  contactId: string;
+  contactName: string;
+  contactEmail: string;
+  orgId: string;
+  orgSlug: string;
+  onBack: () => void;
+  userId: string;
+}
+
+export function InboxThread({ threadId, contactId, contactName, contactEmail, orgId, orgSlug, onBack, userId }: InboxThreadProps) {
+  const supabase = createClient();
+  const [messages, setMessages] = useState<any[]>([]);
+  const [htmlReply, setHtmlReply] = useState("");
+  const [textReply, setTextReply] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const [attachments, setAttachments] = useState<{ filename: string; path: string }[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [editorKey, setEditorKey] = useState(0); // Force Tiptap reset
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const endOfMessagesRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    
+    const fetchMessages = async () => {
+      const { data } = await supabase
+        .from("messages")
+        .select("*")
+        .eq("thread_id", threadId)
+        .order("created_at", { ascending: true });
+      if (isMounted && data) setMessages(data);
+    };
+
+    fetchMessages();
+    supabase.from("threads").update({ is_unread: false }).eq("id", threadId).then();
+    
+    const channel = supabase
+      .channel("messages_channel")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `thread_id=eq.${threadId}` }, () => {
+        fetchMessages();
+      })
+      .subscribe();
+
+    return () => { 
+      isMounted = false; 
+      supabase.removeChannel(channel); 
+    };
+  }, [threadId, supabase]);
+
+  useEffect(() => {
+    endOfMessagesRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    
+    setIsUploading(true);
+    const newAttachments = [...attachments];
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const fileExt = file.name.includes('.') ? file.name.split('.').pop() : 'file';
+      const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
+      const filePath = `${orgId}/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage.from('attachments').upload(filePath, file);
+      
+      if (!uploadError) {
+        const { data } = supabase.storage.from('attachments').getPublicUrl(filePath);
+        newAttachments.push({ filename: file.name, path: data.publicUrl });
+      } else {
+        toast.error(`Failed to upload ${file.name}`);
+      }
+    }
+
+    setAttachments(newAttachments);
+    setIsUploading(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const removeAttachment = (index: number) => {
+    setAttachments(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleSend = async () => {
+    if (!textReply.trim() && attachments.length === 0) return;
+    setIsSending(true);
+
+    const res = await fetch("/api/email/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        org_id: orgId,
+        contact_id: contactId,
+        sender_id: userId,
+        to: contactEmail,
+        content: textReply,
+        htmlContent: htmlReply,
+        attachments: attachments,
+        from_slug: orgSlug
+      })
+    });
+
+    if (res.ok) {
+      setHtmlReply("");
+      setTextReply("");
+      setAttachments([]);
+      setEditorKey(prev => prev + 1); // Forcibly clears uncontrolled Tiptap instance
+    } else {
+      toast.error("Failed to send email");
+    }
+    setIsSending(false);
+  };
+
+  return (
+    <div className="flex-1 flex flex-col h-full bg-paper relative">
+      <div className="px-4 md:px-8 py-4 flex items-center gap-3 border-b border-line bg-paper z-10 flex-shrink-0">
+        <button onClick={onBack} className="md:hidden text-ink">
+          <ChevronLeft size={18} />
+        </button>
+        <Avatar name={contactName} size={32} />
+        <div>
+          <div className="text-sm font-medium text-ink font-body">{contactName}</div>
+          <div className="text-xs text-slate font-body">{contactEmail}</div>
+        </div>
+      </div>
+
+      <div className="flex-1 px-4 md:px-8 py-6 space-y-4 overflow-y-auto min-h-0">
+        {messages.map((msg) => {
+          const isOutbound = msg.direction === "outbound";
+          return (
+            <div key={msg.id} className={`flex flex-col ${isOutbound ? "items-end" : "items-start"}`}>
+              <div 
+                className={`max-w-md w-full rounded-xl p-4 text-sm font-body ${
+                  isOutbound 
+                    ? "bg-ink text-paper rounded-tr-sm" 
+                    : "bg-white text-ink rounded-tl-sm border border-line shadow-sm"
+                }`}
+              >
+                <div 
+                  dangerouslySetInnerHTML={{ __html: msg.content }} 
+                  className={`prose prose-sm max-w-none ${isOutbound ? 'prose-invert' : ''} [&>p]:m-0 [&>p]:mb-2 last:[&>p]:mb-0`} 
+                />
+
+                {msg.attachments && msg.attachments.length > 0 && (
+                  <div className={`mt-3 pt-3 border-t flex flex-col gap-2 ${isOutbound ? 'border-inkSoft' : 'border-line'}`}>
+                    {msg.attachments.map((att: any, i: number) => (
+                      <a 
+                        key={i} 
+                        href={att.path} 
+                        target="_blank" 
+                        rel="noreferrer"
+                        className={`flex items-center gap-2 text-xs p-2 rounded-lg transition-colors ${
+                          isOutbound ? 'bg-inkSoft hover:bg-ink600 text-paper' : 'bg-paperDim hover:bg-[#E0DFDA] text-ink'
+                        }`}
+                      >
+                        <FileText size={14} className={isOutbound ? 'text-slate' : 'text-berry'} />
+                        <span className="truncate">{att.filename}</span>
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <span className="text-[10px] text-slate font-mono mt-1">
+                {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            </div>
+          );
+        })}
+        <div ref={endOfMessagesRef} />
+      </div>
+
+      <div className="px-4 md:px-8 py-4 border-t border-line bg-paper flex-shrink-0">
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-3">
+            {attachments.map((att, i) => (
+              <div key={i} className="flex items-center gap-2 bg-white border border-line px-2 py-1.5 rounded-md text-xs font-body text-ink shadow-sm">
+                <FileText size={12} className="text-berry" />
+                <span className="max-w-[120px] truncate">{att.filename}</span>
+                <button onClick={() => removeAttachment(i)} className="text-slate hover:text-berry ml-1">
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="flex items-end gap-3">
+          <div className="flex-1">
+            <RichTextEditor 
+              key={editorKey}
+              content={htmlReply} 
+              onChange={(html, text) => { setHtmlReply(html); setTextReply(text); }} 
+            />
+          </div>
+          
+          <div className="flex flex-col gap-2 mb-1">
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              className="hidden" 
+              multiple 
+              onChange={handleFileUpload} 
+            />
+            <button 
+              onClick={() => fileInputRef.current?.click()} 
+              disabled={isUploading}
+              className="w-10 h-10 rounded-full flex items-center justify-center bg-white border border-line text-slate hover:text-ink hover:border-berry transition-colors shadow-sm disabled:opacity-50"
+            >
+              {isUploading ? <div className="w-4 h-4 border-2 border-slate border-t-transparent rounded-full animate-spin" /> : <Paperclip size={16} />}
+            </button>
+            <Button 
+              onClick={handleSend} 
+              disabled={isSending || (!textReply.trim() && attachments.length === 0)} 
+              className="w-10 h-10 rounded-full p-0 flex items-center justify-center shadow-sm"
+            >
+              <Send size={16} className={(textReply.trim() || attachments.length > 0) ? "translate-x-[1px] translate-y-[-1px]" : ""} />
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/features/pipeline/NextActionModal.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
+import { Modal } from "@/components/ui/Modal";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { createClient } from "@/lib/supabase";
+import { useAppStore } from "@/store/useAppStore";
+import { toast } from "sonner";
+
+const nextActionSchema = z.object({
+  title: z.string().min(1, "You must specify the next action to take"),
+  due_date: z.string().min(1, "You must set a due date"),
+  sync_calendar: z.boolean().optional(),
+});
+
+type NextActionValues = z.infer<typeof nextActionSchema>;
+
+interface NextActionModalProps {
+  isOpen: boolean;
+  dealId: string;
+  contactId: string;
+  newStage: string;
+  onCancel: () => void;
+  onError: () => void;
+  onSuccess: () => void;
+}
+
+export function NextActionModal({ isOpen, dealId, contactId, newStage, onCancel, onError, onSuccess }: NextActionModalProps) {
+  const supabase = createClient();
+  const { activeOrgId, userId } = useAppStore();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [hasCalendar, setHasCalendar] = useState(false);
+
+  const { register, handleSubmit, formState: { errors }, reset } = useForm<NextActionValues>({
+    resolver: zodResolver(nextActionSchema),
+    defaultValues: { sync_calendar: true }
+  });
+
+  useEffect(() => {
+    if (isOpen && userId) {
+      supabase.from("users").select("calendar_connected").eq("id", userId).single().then(({ data }) => setHasCalendar(!!data?.calendar_connected));
+    }
+  }, [isOpen, userId, supabase]);
+
+  const onSubmit = async (data: NextActionValues) => {
+    if (!activeOrgId || !userId) return;
+    setIsSubmitting(true);
+
+    const { error: dealError } = await supabase
+      .from("deals")
+      .update({ stage: newStage, next_action: data.title, updated_at: new Date().toISOString() })
+      .eq("id", dealId);
+
+    if (dealError) {
+      toast.error("Failed to move deal");
+      setIsSubmitting(false);
+      onError(); // Safely reverts the optimistic UI
+      return;
+    }
+
+    await supabase.from("tasks").insert({
+      org_id: activeOrgId,
+      contact_id: contactId,
+      assignee_id: userId,
+      title: data.title,
+      due_date: data.due_date,
+      is_completed: false
+    });
+
+    if (data.sync_calendar && hasCalendar) {
+      await fetch("/api/calendar/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, title: data.title, dueDate: data.due_date })
+      });
+    }
+
+    setIsSubmitting(false);
+    toast.success("Deal advanced and task created!");
+    reset();
+    onSuccess();
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onCancel} title="Enforce Next Action">
+      <div className="mb-4 p-3 rounded-lg bg-paperDim border border-line text-sm text-ink font-body">
+        You are moving this deal to <span className="font-semibold text-berry">{newStage}</span>. 
+        To prevent deals from going stale, you must set a follow-up action.
+      </div>
+
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <Input label="What is the next action?" placeholder="e.g. Call to confirm pricing details" {...register("title")} error={errors.title?.message} autoFocus />
+        <Input label="Due Date" type="date" {...register("due_date")} error={errors.due_date?.message} />
+        
+        {hasCalendar && (
+          <div className="flex items-center gap-2 mt-2">
+            <input type="checkbox" id="sync_calendar_deal" {...register("sync_calendar")} className="w-4 h-4 text-berry rounded border-line focus:ring-berry" />
+            <label htmlFor="sync_calendar_deal" className="text-sm text-ink font-body">Add to connected calendar</label>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-3 pt-4 border-t border-line mt-2">
+          <Button type="button" variant="ghost" onClick={onCancel}>Cancel Move</Button>
+          <Button type="submit" disabled={isSubmitting}>
+            {isSubmitting ? "Saving..." : "Confirm & Move Deal"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+</file>
+
+<file path="src/components/features/pipeline/PipelineColumn.tsx">
+"use client";
+import React from "react";
+import { useDroppable } from "@dnd-kit/core";
+import { PipelineCard } from "./PipelineCard";
+
+interface PipelineColumnProps {
+  stage: string;
+  deals: any[];
+  onDealClick: (deal: any) => void;
+}
+
+export function PipelineColumn({ stage, deals, onDealClick }: PipelineColumnProps) {
+  const { setNodeRef, isOver } = useDroppable({ id: stage });
+
+  const stageColorMap: Record<string, string> = {
+    "New Lead": "#6B6E77",
+    "Demo Scheduled": "#D69A32",
+    "Proposal Sent": "#D69A32",
+    "Contract Sent": "#AF3358",
+    "Onboarding": "#AF3358",
+    "Active Client": "#4C8A67",
+  };
+
+  const stageColor = stageColorMap[stage] || "#6B6E77";
+  const stageValue = deals.reduce((sum, d) => sum + Number(d.value), 0);
+
+  return (
+    <div className="w-[85vw] sm:w-[280px] flex-shrink-0 snap-start flex flex-col h-full max-h-full">
+      <div className="pt-2 pb-3 px-1 mb-2 sticky top-0 bg-paper z-10" style={{ borderTop: `3px solid ${stageColor}` }}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-sm font-medium text-ink font-body uppercase tracking-[0.05em]">{stage}</span>
+          <span className="text-xs text-slate font-mono bg-paperDim px-1.5 py-0.5 rounded">{deals.length}</span>
+        </div>
+        <div className="text-xs text-slate font-mono">${stageValue.toLocaleString()}</div>
+      </div>
+      
+      <div ref={setNodeRef} className={`space-y-3 min-h-[150px] p-1.5 rounded-lg transition-colors flex-1 overflow-y-auto pb-6 ${isOver ? "bg-paperDim/80 border border-dashed border-slate/50" : "bg-transparent border border-transparent"}`}>
+        {deals.map(deal => (
+          <PipelineCard key={deal.id} deal={deal} onClick={onDealClick} />
+        ))}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="tailwind.config.ts">
+import type { Config } from "tailwindcss";
+
+const config: Config = {
+  content: [
+    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        ink: "#13141B",
+        inkSoft: "#1B1D27",
+        ink600: "#3A3D49",
+        paper: "#F5F5F2",
+        paperDim: "#EDECE7",
+        line: "#E3E1DA",
+        berry: "#AF3358",
+        berrySoft: "#F3DEE5",
+        amber: "#D69A32",
+        amberSoft: "#F7ECD6",
+        sage: "#4C8A67",
+        sageSoft: "#DDEBE1",
+        slate: "#6B6E77",
+      },
+      fontFamily: {
+        display: ["var(--font-display)"],
+        body: ["var(--font-body)"],
+        mono: ["var(--font-mono)"],
+      },
+      boxShadow: {
+        card: "0px 2px 4px rgba(19, 20, 27, 0.04)",
+      }
+    },
+  },
+  plugins: [
+    require('@tailwindcss/typography'), // <-- Ensures TipTap rich text renders beautifully
+  ],
+};
+export default config;
+</file>
+
+<file path="src/app/api/auth/reset-password/route.ts">
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { ResendProvider } from "@/lib/email/ResendProvider";
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export async function POST(req: Request) {
+  try {
+    const { email } = await req.json();
+
+    if (!email) {
+      return NextResponse.json({ error: "Missing email address" }, { status: 400 });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    // 1. Look up the user in our public users table
+    const { data: userProfile } = await supabaseAdmin
+      .from("users")
+      .select("id")
+      .eq("email", cleanEmail)
+      .maybeSingle();
+
+    if (!userProfile) {
+      // Return success anyway to prevent email enumeration attacks
+      return NextResponse.json({ success: true });
+    }
+
+    // 2. Generate a highly secure custom token
+    const { data: tokenRecord, error: tokenError } = await supabaseAdmin
+      .from("auth_tokens")
+      .insert({ user_id: userProfile.id })
+      .select("token")
+      .single();
+
+    if (tokenError || !tokenRecord) {
+      console.error("[Reset Password API] Failed to generate custom token:", tokenError);
+      return NextResponse.json({ error: "Failed to generate security token." }, { status: 500 });
+    }
+
+    // 3. Construct our 100% custom, controlled URL
+    const origin = req.headers.get("origin") || "https://app.pyrexxai.com";
+    const actionLink = `${origin}/auth/update-password?token=${tokenRecord.token}`;
+
+    console.log("[Reset Password API] Custom link generated:", { cleanEmail, actionLink });
+
+    // 4. Fetch the root Pyrexx AI organization details for email config
+    const { data: org } = await supabaseAdmin
+      .from("organizations")
+      .select("name, slug, resend_api_key, sending_domain")
+      .eq("slug", "pyrexxai")
+      .single();
+
+    const activeProvider = new ResendProvider(org?.resend_api_key || undefined);
+    const emailDomain = org?.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "app.pyrexxai.com";
+    const fromAddress = `security@${emailDomain}`;
+
+    const resetHtml = `
+      <div style="font-family: sans-serif; padding: 24px; max-width: 480px; border: 1px solid #E3E1DA; border-radius: 12px; background-color: #FFFFFF; box-shadow: 0px 4px 12px rgba(19, 20, 27, 0.03);">
+        <h2 style="color: #13141B; font-weight: 600; font-size: 20px; margin-top: 0;">Reset Your Password</h2>
+        <p style="color: #3A3D49; font-size: 14px; line-height: 1.5;">
+          We received a request to reset the password for your Pyrexx CRM account.
+        </p>
+        <p style="color: #3A3D49; font-size: 14px; line-height: 1.5; margin-bottom: 24px;">
+          Click the secure button below to establish a new password. This link is single-use and will expire in 24 hours.
+        </p>
+        <div style="text-align: center;">
+          <a href="${actionLink}" style="background-color: #13141B; color: #F5F5F2; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 500; display: inline-block;">
+            Reset Password
+          </a>
+        </div>
+        <p style="color: #6B6E77; font-size: 11px; margin-top: 28px; line-height: 1.4; border-top: 1px solid #E3E1DA; padding-top: 16px; font-style: italic;">
+          If you did not request this change, you can safely ignore this email. Your credentials will remain secure.
+        </p>
+      </div>
+    `;
+
+    const emailResult = await activeProvider.sendEmail({
+      to: cleanEmail,
+      from: fromAddress,
+      subject: "Reset your Pyrexx CRM password",
+      text: `Please reset your password using this link: ${actionLink}`,
+      html: resetHtml
+    });
+
+    if (emailResult.error) {
+      console.error("[Reset Password API] Email send failed:", emailResult.error);
+      return NextResponse.json({ error: `Security link generated, but Resend failed to dispatch email.` }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (err: any) {
+    console.error("[Reset Password API Exception]:", err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+</file>
+
+<file path="src/app/api/email/inbound/route.ts">
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+// Safely extract email from "Name <email@domain.com>" or just "email@domain.com"
+const extractEmail = (str: string) => {
+  const match = str.match(/<([^>]+)>/);
+  return match ? match[1].trim().toLowerCase() : str.trim().toLowerCase();
+};
+
+export async function POST(req: Request) {
+  try {
+    const payload = await req.json();
+    const emailData = payload.data || payload; 
+    const { from, to, subject, text, html } = emailData;
+
+    console.log("[Inbound Webhook] Received email packet:", { from, to, subject });
+
+    if (!from || !to) {
+      return NextResponse.json({ error: "Missing to/from addresses" }, { status: 400 });
+    }
+
+    const rawTo = Array.isArray(to) ? to[0] : to;
+    const toAddress = extractEmail(rawTo);
+    const localPart = toAddress.split("@")[0];
+
+    // Use pop() to safely isolate the last segment in a multi-dot rep name
+    // E.g., peter.gambo.pyrexxai -> "pyrexxai"
+    let slug = localPart;
+    if (localPart.includes(".")) {
+      const parts = localPart.split(".");
+      slug = parts.pop() || localPart;
+    }
+
+    console.log("[Inbound Webhook] Resolving organization via slug:", { localPart, resolvedSlug: slug });
+
+    const { data: org } = await supabase.from("organizations").select("id").eq("slug", slug).single();
+    if (!org) {
+      console.error("[Inbound Webhook] Organization slug lookup failed:", { slug });
+      return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
+    }
+
+    const senderEmail = extractEmail(from);
+    
+    let contactId = null;
+    const { data: existingContact } = await supabase
+      .from("contacts")
+      .select("id")
+      .eq("org_id", org.id)
+      .eq("email", senderEmail)
+      .single();
+
+    if (existingContact) {
+      contactId = existingContact.id;
+    } else {
+      console.log("[Inbound Webhook] Contact not found, auto-creating lead...", { senderEmail });
+      const { data: newContact } = await supabase.from("contacts").insert({
+        org_id: org.id,
+        first_name: senderEmail.split("@")[0], 
+        last_name: "Inquiry",
+        email: senderEmail,
+        type: "lead",
+        stage: "New Lead"
+      }).select("id").single();
+      contactId = newContact!.id;
+    }
+
+    let threadId = null;
+    const { data: existingThread } = await supabase
+      .from("threads")
+      .select("id")
+      .eq("org_id", org.id)
+      .eq("contact_id", contactId)
+      .eq("channel", "email")
+      .single();
+
+    if (existingThread) {
+      threadId = existingThread.id;
+    } else {
+      console.log("[Inbound Webhook] Active conversation thread not found, provisioning...");
+      const { data: newThread } = await supabase.from("threads").insert({
+        org_id: org.id,
+        contact_id: contactId,
+        channel: "email",
+        subject: subject || "Inbound Conversation"
+      }).select("id").single();
+      threadId = newThread!.id;
+    }
+
+    const { error: insertError } = await supabase.from("messages").insert({
+      thread_id: threadId,
+      direction: "inbound",
+      content: text || html || "Empty Message content"
+    });
+
+    if (insertError) {
+      console.error("[Inbound Webhook] Failed to write message to database:", insertError);
+      return NextResponse.json({ error: "Failed to log message." }, { status: 500 });
+    }
+
+    console.log("[Inbound Webhook] Message logged successfully. Realtime listeners updated.");
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    console.error("[Inbound Webhook Critical Exception]:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+</file>
+
+<file path="src/app/auth/update-password/page.tsx">
+"use client";
+import React, { useState, useEffect, Suspense } from "react";
+import { PulseTrace } from "@/components/ui/PulseTrace";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { createClient } from "@/lib/supabase";
+import { useRouter, useSearchParams } from "next/navigation";
+import { toast, Toaster } from "sonner";
+
+function UpdatePasswordContent() {
+  const supabase = createClient();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const token = searchParams.get("token");
+  
+  const [password, setPassword] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [isValidating, setIsValidating] = useState(true);
+
+  useEffect(() => {
+    if (!token) {
+      toast.error("Invalid or missing security token. Redirecting...");
+      setTimeout(() => router.push('/auth/login'), 2000);
+    } else {
+      setIsValidating(false);
+    }
+  }, [token, router]);
+
+  const handleUpdate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password.length < 6) {
+      toast.error("Password must be at least 6 characters.");
+      return;
+    }
+
+    setIsLoading(true);
+
+    // 1. Submit the custom token and password to our secure backend route
+    const res = await fetch("/api/auth/confirm-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, password })
+    });
+
+    const data = await res.json();
+
+    if (res.ok && data.success) {
+      // 2. The backend successfully set the password! Now we seamlessly log them in.
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: data.email,
+        password: password
+      });
+
+      if (signInError) {
+        toast.error("Password updated, but login failed.", { description: signInError.message });
+        setIsLoading(false);
+      } else {
+        toast.success("Password secured! Welcome to Pyrexx.");
+        setTimeout(() => router.push("/"), 1000);
+      }
+    } else {
+      toast.error("Failed to secure account", { description: data.error || "Unknown error occurred" });
+      setIsLoading(false);
+    }
+  };
+
+  if (isValidating) {
+    return <div className="min-h-screen flex items-center justify-center bg-paperDim"><PulseTrace sentiment="neutral" size="lg" /></div>;
+  }
+
+  return (
+    <div className="min-h-screen w-full flex items-center justify-center bg-paperDim p-4">
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-line p-8">
+        <div className="flex flex-col items-center mb-8">
+          <PulseTrace sentiment="positive" size="lg" />
+          <h1 className="font-display text-2xl text-ink mt-4 text-center">Secure Your Account</h1>
+          <p className="text-sm text-slate font-body mt-1 text-center">Please set a permanent password for your Pyrexx CRM account.</p>
+        </div>
+
+        <form onSubmit={handleUpdate} className="space-y-4">
+          <Input 
+            label="New Password" 
+            type="password" 
+            placeholder="At least 6 characters"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            autoFocus
+          />
+          <Button type="submit" className="w-full mt-2" disabled={isLoading}>
+            {isLoading ? "Securing..." : "Save Password & Enter"}
+          </Button>
+        </form>
+      </div>
+      <Toaster position="top-center" richColors />
+    </div>
+  );
+}
+
+// Suspense wrapper required by Next.js for useSearchParams
+export default function UpdatePasswordPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center bg-paperDim"><PulseTrace sentiment="neutral" size="lg" /></div>}>
+      <UpdatePasswordContent />
+    </Suspense>
+  );
+}
+</file>
+
+<file path="src/app/contacts/[id]/page.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { Avatar } from "@/components/ui/Avatar";
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { ChevronLeft, Mail, Phone, CheckCircle2, Circle, Edit3, Trash2, X, Save } from "lucide-react";
+import { createClient } from "@/lib/supabase";
+import { useParams, useRouter } from "next/navigation";
+import { useAppStore } from "@/store/useAppStore";
+import { toast, Toaster } from "sonner";
+
+export default function ContactDetailPage() {
+  const { id } = useParams();
+  const router = useRouter();
+  const supabase = createClient();
+  const { activeOrgId, userId, userRole } = useAppStore();
+  
+  const [contact, setContact] = useState<any>(null);
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [timeline, setTimeline] = useState<any[]>([]);
+  const [noteContent, setNoteContent] = useState("");
+  const [isSavingNote, setIsSavingNote] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState({ first_name: "", last_name: "", email: "", phone: "" });
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+
+  useEffect(() => {
+    if (activeOrgId && id) fetchData();
+  }, [activeOrgId, id]);
+
+  const fetchData = async () => {
+    const { data: contactData } = await supabase.from("contacts").select("*, deals(value)").eq("id", id).single();
+    
+    if (contactData) {
+      const dealValue = contactData.deals?.reduce((sum: number, d: any) => sum + Number(d.value), 0) || 0;
+      setContact({ ...contactData, total_value: dealValue });
+      setEditForm({
+        first_name: contactData.first_name || "",
+        last_name: contactData.last_name || "",
+        email: contactData.email || "",
+        phone: contactData.phone || ""
+      });
+    } else {
+      toast.error("Contact not found");
+      router.push("/contacts");
+    }
+
+    const { data: tasksData } = await supabase.from("tasks").select("*").eq("contact_id", id).eq("is_completed", false).order("due_date", { ascending: true });
+    if (tasksData) setTasks(tasksData);
+
+    const { data: activities } = await supabase.from("activities").select("*, users(full_name)").eq("contact_id", id);
+    let mergedTimeline = (activities || []).map(a => ({
+      id: a.id,
+      date: new Date(a.created_at),
+      type: a.type, 
+      content: a.content,
+      actor: a.users?.full_name || "System"
+    }));
+
+    mergedTimeline.sort((a, b) => b.date.getTime() - a.date.getTime());
+    setTimeline(mergedTimeline);
+  };
+
+  const handleSaveEdit = async () => {
+    setIsSavingEdit(true);
+    const { error } = await supabase.from("contacts").update({
+      first_name: editForm.first_name,
+      last_name: editForm.last_name,
+      email: editForm.email,
+      phone: editForm.phone,
+      updated_at: new Date().toISOString()
+    }).eq("id", id);
+
+    setIsSavingEdit(false);
+    if (error) {
+      toast.error("Failed to update contact");
+    } else {
+      toast.success("Contact updated!");
+      setIsEditing(false);
+      fetchData();
+    }
+  };
+
+  const handleDeleteContact = async () => {
+    if (!window.confirm("Are you sure you want to delete this contact? This will permanently delete all their deals, tasks, and history.")) return;
+    setIsDeleting(true);
+
+    // Manual cleanup prevents PostGres Foreign Key constraint errors 
+    await supabase.from("deals").delete().eq("contact_id", id);
+    await supabase.from("tasks").delete().eq("contact_id", id);
+    await supabase.from("activities").delete().eq("contact_id", id);
+    const { data: threads } = await supabase.from("threads").select("id").eq("contact_id", id);
+    if (threads && threads.length > 0) {
+        const threadIds = threads.map(t => t.id);
+        await supabase.from("messages").delete().in("thread_id", threadIds);
+        await supabase.from("threads").delete().eq("contact_id", id);
+    }
+
+    const { error } = await supabase.from("contacts").delete().eq("id", id);
+    setIsDeleting(false);
+    if (error) {
+      toast.error("Failed to delete contact");
+    } else {
+      toast.success("Contact deleted");
+      router.push("/contacts");
+    }
+  };
+
+  const handleSaveNote = async () => {
+    if (!noteContent.trim() || !activeOrgId || !userId) return;
+    setIsSavingNote(true);
+    const { error } = await supabase.from("activities").insert({ org_id: activeOrgId, contact_id: id, actor_id: userId, type: "note", content: noteContent });
+    setIsSavingNote(false);
+    if (error) toast.error("Failed to save note");
+    else { toast.success("Note added"); setNoteContent(""); fetchData(); }
+  };
+
+  const toggleTask = async (taskId: string) => {
+    setTasks(prev => prev.filter(t => t.id !== taskId)); 
+    await supabase.from("tasks").update({ is_completed: true }).eq("id", taskId);
+    toast.success("Task completed");
+  };
+
+  const handleEmailClick = async () => {
+    if (!activeOrgId || !contact?.id) return;
+    const { data: existingThread } = await supabase.from("threads").select("id").eq("org_id", activeOrgId).eq("contact_id", contact.id).eq("channel", "email").single();
+    if (existingThread) {
+      router.push(`/inbox?threadId=${existingThread.id}`);
+    } else {
+      const { data: newThread, error } = await supabase.from("threads").insert({ org_id: activeOrgId, contact_id: contact.id, channel: "email", subject: `Conversation with ${contact.first_name}` }).select("id").single();
+      if (!error && newThread) router.push(`/inbox?threadId=${newThread.id}`);
+    }
+  };
+
+  if (!contact) return (
+    <AppLayout><div className="h-full flex items-center justify-center"><div className="animate-spin w-6 h-6 border-2 border-berry border-t-transparent rounded-full" /></div></AppLayout>
+  );
+
+  return (
+    <AppLayout>
+      <div className="p-4 md:p-8 max-w-5xl mx-auto">
+        <button onClick={() => router.push('/contacts')} className="flex items-center gap-1 text-sm mb-6 text-slate font-body hover:text-ink transition-colors">
+          <ChevronLeft size={15} /> Back to Contacts
+        </button>
+
+        <div className="flex items-start gap-4 mb-8 flex-wrap justify-between">
+          <div className="flex items-start gap-4 flex-1 min-w-[250px]">
+            <Avatar name={`${contact.first_name} ${contact.last_name}`} size={64} />
+            <div className="flex-1">
+              {isEditing ? (
+                <div className="flex gap-2 mb-2">
+                  <input value={editForm.first_name} onChange={e => setEditForm({...editForm, first_name: e.target.value})} className="font-display text-[32px] text-ink leading-tight w-full bg-paperDim border border-line rounded px-2 outline-none focus:border-berry" placeholder="First Name" />
+                  <input value={editForm.last_name} onChange={e => setEditForm({...editForm, last_name: e.target.value})} className="font-display text-[32px] text-ink leading-tight w-full bg-paperDim border border-line rounded px-2 outline-none focus:border-berry" placeholder="Last Name" />
+                </div>
+              ) : (
+                <h1 className="font-display text-[32px] text-ink leading-tight">{contact.first_name} {contact.last_name}</h1>
+              )}
+              <div className="flex items-center gap-2 mt-2 flex-wrap">
+                <Badge variant="slate">{contact.stage}</Badge>
+                {contact.type === 'patient' && <Badge variant="sage">Patient</Badge>}
+              </div>
+            </div>
+          </div>
+          
+          <div className="flex gap-2 items-center">
+            {isEditing ? (
+              <>
+                <Button variant="ghost" onClick={() => setIsEditing(false)}><X size={16} /> Cancel</Button>
+                <Button onClick={handleSaveEdit} disabled={isSavingEdit}>{isSavingEdit ? "Saving..." : <><Save size={16} /> Save</>}</Button>
+              </>
+            ) : (
+              <>
+                {(userRole === 'owner' || userRole === 'manager') && (
+                  <button onClick={handleDeleteContact} disabled={isDeleting} className="p-2 text-slate hover:text-berry transition-colors rounded-lg hover:bg-berrySoft/50 disabled:opacity-50" title="Delete Contact">
+                    {isDeleting ? <div className="w-4 h-4 border-2 border-slate border-t-transparent rounded-full animate-spin" /> : <Trash2 size={18} />}
+                  </button>
+                )}
+                <Button variant="outline" icon={Edit3} onClick={() => setIsEditing(true)}>Edit</Button>
+                <Button variant="outline" icon={Phone}>Call</Button>
+                <Button variant="outline" icon={Mail} onClick={handleEmailClick}>Email</Button>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+          <div className="md:col-span-2 space-y-6">
+            <div className="rounded-xl p-5 bg-white border border-line shadow-sm">
+              <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Contact Details</div>
+              <div className="space-y-3">
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-slate font-body">Email</span>
+                  {isEditing ? (
+                    <input value={editForm.email} onChange={e => setEditForm({...editForm, email: e.target.value})} className="bg-paperDim border border-line rounded px-2 py-1 outline-none focus:border-berry text-right w-2/3" />
+                  ) : (
+                    <span className="text-ink font-body font-medium">{contact.email || "—"}</span>
+                  )}
+                </div>
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-slate font-body">Phone</span>
+                  {isEditing ? (
+                    <input value={editForm.phone} onChange={e => setEditForm({...editForm, phone: e.target.value})} className="bg-paperDim border border-line rounded px-2 py-1 outline-none focus:border-berry text-right font-mono w-2/3" />
+                  ) : (
+                    <span className="text-ink font-mono font-medium">{contact.phone || "—"}</span>
+                  )}
+                </div>
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-slate font-body">Total Pipeline Value</span>
+                  <span className="text-ink font-mono font-medium text-sage">${contact.total_value.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl p-5 bg-white border border-line shadow-sm">
+              <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Open Tasks</div>
+              {tasks.length === 0 ? (
+                <div className="text-sm text-slate font-body">No open tasks.</div>
+              ) : (
+                <div className="space-y-3">
+                  {tasks.map(t => (
+                    <div key={t.id} className="flex items-start gap-2.5">
+                      <button onClick={() => toggleTask(t.id)} className="mt-0.5 text-slate hover:text-sage transition-colors"><Circle size={15} /></button>
+                      <div>
+                        <div className="text-sm text-ink font-body font-medium leading-tight">{t.title}</div>
+                        <div className="text-[10px] text-berry font-mono mt-0.5">Due: {new Date(t.due_date).toLocaleDateString()}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="md:col-span-3 flex flex-col h-full">
+            <div className="text-xs uppercase mb-4 text-slate tracking-[0.06em] font-body font-medium">Activity Timeline</div>
+            <div className="rounded-xl p-4 bg-white border border-line shadow-sm mb-6 flex flex-col gap-3">
+              <textarea value={noteContent} onChange={(e) => setNoteContent(e.target.value)} placeholder="Log a note..." className="w-full text-sm outline-none resize-none font-body text-ink placeholder:text-slate bg-transparent h-16" />
+              <div className="flex justify-between items-center border-t border-line pt-3">
+                <div className="flex gap-2 text-slate"><button className="hover:text-ink"><Edit3 size={15} /></button></div>
+                <Button onClick={handleSaveNote} disabled={isSavingNote || !noteContent.trim()}>{isSavingNote ? "Saving..." : "Save Note"}</Button>
+              </div>
+            </div>
+
+            <div className="relative pl-6 flex-1">
+              <div className="absolute left-[11px] top-2 bottom-0 w-px bg-line" />
+              {timeline.map((item, idx) => (
+                <div key={idx} className="relative mb-6">
+                  <div className="absolute -left-6 top-1 w-5 h-5 rounded-full flex items-center justify-center bg-paperDim border border-line z-10">
+                    {item.type === 'note' ? <Edit3 size={10} className="text-slate" /> : <CheckCircle2 size={10} className="text-berry" />}
+                  </div>
+                  <div className="rounded-xl p-4 bg-white border border-line shadow-sm">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-sm font-medium text-ink font-body">{item.type === 'note' ? `${item.actor} left a note` : "Stage Change"}</span>
+                      <span className="text-[10px] text-slate font-mono">{item.date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
+                    </div>
+                    <div className="text-sm text-ink600 font-body whitespace-pre-wrap leading-relaxed">{item.content}</div>
+                  </div>
+                </div>
+              ))}
+              {timeline.length === 0 && <div className="text-sm text-slate font-body ml-2">No activity recorded yet.</div>}
+            </div>
+          </div>
+        </div>
+      </div>
+      <Toaster position="top-right" richColors />
+    </AppLayout>
+  );
+}
+</file>
+
 <file path="src/app/page.tsx">
 "use client";
 import React, { useEffect, useState } from "react";
@@ -4143,12 +4408,12 @@ export default function DashboardPage() {
     // 1. Fetch Deals
     const { data: deals } = await supabase.from("deals").select("*").eq("org_id", activeOrgId);
     
-    // 2. Fetch active memberships to filter the leaderboard
+    // 2. RESTORED: Fetch active memberships to filter the leaderboard exactly as it was
     const { data: activeMembers } = await supabase
       .from("memberships")
       .select("user_id")
       .eq("org_id", activeOrgId)
-      .eq("status", "active"); // <-- Only evaluate active reps!
+      .eq("status", "active"); 
 
     const activeMemberIds = activeMembers?.map(m => m.user_id) || [];
 
@@ -4175,7 +4440,7 @@ export default function DashboardPage() {
         count: deals.filter(d => d.stage === stage).length
       }));
 
-      // 4. Compute Leaderboard (Filtered to active members only)
+      // 4. Compute Leaderboard
       const todaysActivities = activities.filter(
         a => new Date(a.created_at) >= today && activeMemberIds.includes(a.actor_id)
       );
@@ -4308,127 +4573,6 @@ export default function DashboardPage() {
 }
 </file>
 
-<file path="src/app/settings/profile/page.tsx">
-"use client";
-import React, { useState, useEffect } from "react";
-import { AppLayout } from "@/components/layout/AppLayout";
-import { SectionTitle } from "@/components/ui/SectionTitle";
-import { Input } from "@/components/ui/Input";
-import { Button } from "@/components/ui/Button";
-import { createClient } from "@/lib/supabase";
-import { toast, Toaster } from "sonner";
-import { useAppStore } from "@/store/useAppStore";
-
-export default function ProfileSettingsPage() {
-  const supabase = createClient();
-  const { userId, userName, userEmail, setUserName } = useAppStore();
-  
-  const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [isSavingProfile, setIsSavingProfile] = useState(false);
-  const [isSavingAuth, setIsSavingAuth] = useState(false);
-
-  useEffect(() => {
-    if (userName) setFullName(userName);
-    if (userEmail) setEmail(userEmail);
-  }, [userName, userEmail]);
-
-  const handleUpdateProfile = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!userId) {
-      toast.error("User session not found.");
-      return;
-    }
-    
-    setIsSavingProfile(true);
-
-    // FIX: Changed .update to .upsert to guarantee it saves even if the row is missing
-    const { error } = await supabase.from("users").upsert({ 
-      id: userId, 
-      full_name: fullName 
-    });
-    
-    setIsSavingProfile(false);
-    if (error) {
-      toast.error("Failed to update profile.", { description: error.message });
-    } else {
-      toast.success("Profile updated successfully.");
-      setUserName(fullName);
-    }
-  };
-
-  const handleUpdateSecurity = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSavingAuth(true);
-
-    const updates: any = {};
-    if (email && email !== userEmail) updates.email = email;
-    if (password) updates.password = password;
-
-    const { error } = await supabase.auth.updateUser(updates);
-
-    setIsSavingAuth(false);
-    if (error) {
-      toast.error("Security update failed", { description: error.message });
-    } else {
-      toast.success("Security credentials updated! Please verify your new email if changed.");
-      setPassword("");
-    }
-  };
-
-  return (
-    <AppLayout>
-      <div className="p-4 md:p-8 max-w-3xl mx-auto flex-1 w-full">
-        <SectionTitle eyebrow="Settings" title="Personal Profile" />
-
-        <div className="space-y-6 mt-6">
-          <div className="rounded-xl p-6 border border-line bg-white shadow-card">
-            <h2 className="text-lg font-medium text-ink font-body mb-4">Public Information</h2>
-            <form onSubmit={handleUpdateProfile} className="space-y-4 max-w-md">
-              <Input 
-                label="Full Name" 
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-              />
-              <Button type="submit" disabled={isSavingProfile}>
-                {isSavingProfile ? "Saving..." : "Save Profile"}
-              </Button>
-            </form>
-          </div>
-
-          <div className="rounded-xl p-6 border border-line bg-white shadow-card">
-            <h2 className="text-lg font-medium text-ink font-body mb-4">Security & Authentication</h2>
-            <p className="text-xs text-slate font-body mb-4 max-w-md">
-              Updating your email will require you to verify the new address. Updating your password will log out all other active sessions.
-            </p>
-            <form onSubmit={handleUpdateSecurity} className="space-y-4 max-w-md">
-              <Input 
-                label="Login Email" 
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-              <Input 
-                label="New Password" 
-                type="password"
-                placeholder="Leave blank to keep current password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-              <Button type="submit" disabled={isSavingAuth} variant="outline">
-                {isSavingAuth ? "Securing..." : "Update Security Credentials"}
-              </Button>
-            </form>
-          </div>
-        </div>
-      </div>
-      <Toaster position="top-right" richColors />
-    </AppLayout>
-  );
-}
-</file>
-
 <file path="src/app/tasks/page.tsx">
 "use client";
 import React, { useState, useEffect } from "react";
@@ -4446,6 +4590,7 @@ export default function TasksPage() {
   const supabase = createClient();
   const [tasks, setTasks] = useState<any[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
 
   const fetchTasks = async () => {
     if (!activeOrgId || !userId) return;
@@ -4463,10 +4608,19 @@ export default function TasksPage() {
 
   const deleteTask = async (taskId: string) => {
     if (!window.confirm("Delete this task?")) return;
-    setTasks(prev => prev.filter(t => t.id !== taskId));
+    setDeletingTaskId(taskId);
+    
     const { error } = await supabase.from("tasks").delete().eq("id", taskId);
-    if (error) { toast.error("Failed to delete"); fetchTasks(); }
-    else toast.success("Task deleted");
+    
+    setDeletingTaskId(null);
+    if (error) { 
+      toast.error("Failed to delete"); 
+      fetchTasks(); 
+    }
+    else {
+      setTasks(prev => prev.filter(t => t.id !== taskId));
+      toast.success("Task deleted");
+    }
   };
 
   const todayStr = new Date().toISOString().split("T")[0];
@@ -4502,8 +4656,12 @@ export default function TasksPage() {
                         {group !== "Today" && group !== "Completed" && ` • Due: ${new Date(t.due_date).toLocaleDateString()}`}
                       </div>
                     </div>
-                    <button onClick={() => deleteTask(t.id)} className="text-slate hover:text-berry opacity-0 group-hover:opacity-100 transition-opacity p-2">
-                      <Trash2 size={16} />
+                    <button 
+                      onClick={() => deleteTask(t.id)} 
+                      disabled={deletingTaskId === t.id}
+                      className="text-slate hover:text-berry opacity-0 group-hover:opacity-100 transition-opacity p-2 disabled:opacity-50"
+                    >
+                      {deletingTaskId === t.id ? <div className="w-4 h-4 border-2 border-slate border-t-transparent rounded-full animate-spin" /> : <Trash2 size={16} />}
                     </button>
                   </div>
                 ))}
@@ -4536,7 +4694,7 @@ type Step = "UPLOAD" | "MAP" | "IMPORTING";
 const STANDARD_FIELDS = [
   { key: "first_name", label: "First Name" },
   { key: "last_name", label: "Last Name" },
-  { key: "full_name", label: "Full Name (Auto-Split)" }, // Supported for split logic
+  { key: "full_name", label: "Full Name (Auto-Split)" },
   { key: "email", label: "Email Address" },
   { key: "phone", label: "Phone Number" },
   { key: "position", label: "Position / Job Title" },
@@ -4560,7 +4718,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
     
     setFile(selectedFile);
 
-    // Fetch existing custom field definitions
     const { data: extFields } = await supabase.from("custom_field_definitions").select("key, name").eq("org_id", activeOrgId).eq("target_type", "contact");
     setCustomFields(extFields || []);
 
@@ -4573,7 +4730,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
           setHeaders(extractedHeaders);
           setCsvData(results.data);
           
-          // INTELLIGENT FUZZY AUTO-MAPPING
           const initialMap: Record<string, string> = {};
           extractedHeaders.forEach(h => {
             const cleanHeader = h.toLowerCase().replace(/[\s_-]/g, "");
@@ -4593,7 +4749,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
             } else if (["stage", "dealstage"].includes(cleanHeader)) {
               initialMap[h] = "stage";
             } else {
-              // Fallback to mapping as custom field
               initialMap[h] = `custom:${cleanHeader}`;
             }
           });
@@ -4645,8 +4800,8 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
           const customKey = target.replace("custom:", "");
           contactRecord.custom_fields[customKey] = value;
         } else if (target === "full_name" && value) {
-          // INTELLIGENT NAME SPLITTER
-          const nameParts = value.trim().split(/\s+/);
+          // Robust null check before string splits
+          const nameParts = value?.toString().trim().split(/\s+/) || [];
           contactRecord.first_name = nameParts[0] || "Unknown";
           contactRecord.last_name = nameParts.slice(1).join(" ") || "Contact";
         } else {
@@ -4654,7 +4809,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
         }
       });
 
-      // Default safety
       contactRecord.first_name = contactRecord.first_name || "Unknown";
       contactRecord.last_name = contactRecord.last_name || "Contact";
       contactRecord.stage = contactRecord.stage || "New Lead";
@@ -4687,7 +4841,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
 
   return (
     <Modal isOpen={isOpen} onClose={() => { if(step !== "IMPORTING") onClose(); }} title="Smart Import Wizard">
-      
       {step === "UPLOAD" && (
         <div className="flex flex-col items-center justify-center border-2 border-dashed border-line rounded-xl p-8 bg-paperDim text-center">
           <Upload size={32} className="text-slate mb-3" />
@@ -4802,7 +4955,7 @@ export function PipelineBoard() {
       .from("deals")
       .select(`*, contacts (first_name, last_name)`)
       .eq("org_id", activeOrgId)
-      .order("updated_at", { ascending: false }); // Important for Infinite Kanban logic
+      .order("updated_at", { ascending: false }); 
       
     if (!error && data) setDeals(data);
   };
@@ -4859,22 +5012,14 @@ export function PipelineBoard() {
         <div className="flex gap-4 md:gap-6 h-full snap-x snap-mandatory md:snap-none w-max">
           <DndContext collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
             {STAGES.map((stage) => {
-              // The "Infinite Kanban" Fix
-              let stageDeals = deals.filter(d => d.stage === stage);
-              let hiddenCount = 0;
-              
-              if (stage === "Active Client" && stageDeals.length > 15) {
-                hiddenCount = stageDeals.length - 15;
-                stageDeals = stageDeals.slice(0, 15);
-              }
-
+              // Safely filter without buggy slice logic. Handled by CSS overflow.
+              const stageDeals = deals.filter(d => d.stage === stage);
               return (
                 <PipelineColumn 
                   key={stage} 
                   stage={stage} 
                   deals={stageDeals} 
                   onDealClick={(d) => setEditingDeal(d)}
-                  hiddenCount={hiddenCount}
                 />
               );
             })}
@@ -4886,362 +5031,16 @@ export function PipelineBoard() {
       <EditDealModal isOpen={!!editingDeal} deal={editingDeal} onClose={() => setEditingDeal(null)} onSuccess={fetchDeals} />
       
       {pendingMove && (
-        <NextActionModal isOpen={true} dealId={pendingMove.dealId} contactId={pendingMove.contactId} newStage={pendingMove.newStage} onCancel={handleCancelMove} onSuccess={handleConfirmMove} />
+        <NextActionModal 
+          isOpen={true} 
+          dealId={pendingMove.dealId} 
+          contactId={pendingMove.contactId} 
+          newStage={pendingMove.newStage} 
+          onCancel={handleCancelMove}
+          onError={handleCancelMove} 
+          onSuccess={handleConfirmMove} 
+        />
       )}
-    </div>
-  );
-}
-</file>
-
-<file path="tailwind.config.ts">
-import type { Config } from "tailwindcss";
-
-const config: Config = {
-  content: [
-    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
-  ],
-  theme: {
-    extend: {
-      colors: {
-        ink: "#13141B",
-        inkSoft: "#1B1D27",
-        ink600: "#3A3D49",
-        paper: "#F5F5F2",
-        paperDim: "#EDECE7",
-        line: "#E3E1DA",
-        berry: "#AF3358",
-        berrySoft: "#F3DEE5",
-        amber: "#D69A32",
-        amberSoft: "#F7ECD6",
-        sage: "#4C8A67",
-        sageSoft: "#DDEBE1",
-        slate: "#6B6E77",
-      },
-      fontFamily: {
-        display: ["var(--font-display)"],
-        body: ["var(--font-body)"],
-        mono: ["var(--font-mono)"],
-      },
-      boxShadow: {
-        card: "0px 2px 4px rgba(19, 20, 27, 0.04)",
-      }
-    },
-  },
-  plugins: [
-    require('@tailwindcss/typography'), // <-- Ensures TipTap rich text renders beautifully
-  ],
-};
-export default config;
-</file>
-
-<file path="src/app/api/email/send/route.ts">
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { ResendProvider } from "@/lib/email/ResendProvider";
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-    const { org_id, contact_id, sender_id, to, subject, content, htmlContent, attachments, from_slug } = body;
-
-    console.log("[Email API] Received dispatch request:", { org_id, contact_id, to, from_slug, sender_id });
-
-    if (!org_id || !contact_id || (!content && !htmlContent)) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
-    }
-
-    // 1. Fetch organization email configurations (Dynamic keys & domains!)
-    const { data: org, error: orgError } = await supabase
-      .from("organizations")
-      .select("slug, resend_api_key, sending_domain")
-      .eq("id", org_id)
-      .single();
-
-    if (orgError || !org) {
-      console.error("[Email API] Failed to resolve organization configurations:", orgError);
-      return NextResponse.json({ error: "Failed to resolve workspace configurations." }, { status: 400 });
-    }
-
-    // 2. Resolve Rep First Name to use as a personalized sender prefix
-    let senderPrefix = from_slug; // Fallback to org slug if profile is missing
-    
-    if (sender_id) {
-      const { data: profile } = await supabase
-        .from("users")
-        .select("full_name")
-        .eq("id", sender_id)
-        .maybeSingle();
-
-      if (profile && profile.full_name) {
-        // Extract first name, convert to lowercase, and strip non-alphanumeric characters
-        const firstName = profile.full_name.trim().split(/\s+/)[0];
-        senderPrefix = firstName.toLowerCase().replace(/[^a-z0-9]/g, "");
-      }
-    }
-
-    // 3. Initialize Resend dynamically using the tenant's key (falls back to Vercel env if null)
-    const activeProvider = new ResendProvider(org.resend_api_key || undefined);
-    
-    // Resolve which domain to send from
-    const emailDomain = org.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "crm.pyrexxai.com";
-    
-    // Construct the personalized sender address: E.g., peter.pyrexxai@crm.pyrexxai.com
-    const fromAddress = `${senderPrefix}.${from_slug}@${emailDomain}`;
-
-    console.log("[Email API] Attempting send via dynamic provider...", { 
-      fromAddress, 
-      to, 
-      usingCustomKey: !!org.resend_api_key 
-    });
-
-    const emailResult = await activeProvider.sendEmail({
-      to,
-      from: fromAddress,
-      subject: subject || "Update from Pyrexx",
-      text: content,
-      html: htmlContent,
-      attachments: attachments || [],
-    });
-
-    if (emailResult.error) {
-      console.error("[Email API] Dynamic dispatch failed:", emailResult.error);
-      return NextResponse.json({ error: emailResult.error }, { status: 500 });
-    }
-
-    console.log("[Email API] Send success, updating database threads...");
-
-    let { data: thread } = await supabase
-      .from("threads")
-      .select("id")
-      .eq("org_id", org_id)
-      .eq("contact_id", contact_id)
-      .eq("channel", "email")
-      .single();
-
-    if (!thread) {
-      const { data: newThread } = await supabase
-        .from("threads")
-        .insert({ org_id, contact_id, channel: "email", subject })
-        .select("id")
-        .single();
-      thread = newThread;
-    }
-
-    await supabase.from("messages").insert({
-      thread_id: thread!.id,
-      sender_id,
-      direction: "outbound",
-      content: htmlContent || content,
-      attachments: attachments || []
-    });
-
-    return NextResponse.json({ success: true });
-  } catch (err: any) {
-    console.error("[Email API Critical Crash]:", err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
-}
-</file>
-
-<file path="src/app/api/team/invite/route.ts">
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { ResendProvider } from "@/lib/email/ResendProvider";
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-export async function POST(req: Request) {
-  try {
-    const { email, role, org_id } = await req.json();
-
-    if (!email || !role || !org_id) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
-    }
-
-    const cleanEmail = email.trim().toLowerCase();
-    const origin = req.headers.get("origin") || "https://crm.pyrexxai.com";
-    const redirectUrl = `${origin}/auth/update-password`;
-
-    // 1. Fetch the organization details
-    const { data: org, error: orgError } = await supabaseAdmin
-      .from("organizations")
-      .select("name, slug, resend_api_key, sending_domain")
-      .eq("id", org_id)
-      .single();
-
-    if (orgError || !org) {
-      return NextResponse.json({ error: "Failed to resolve organization." }, { status: 400 });
-    }
-
-    // Initialize the Resend provider dynamically (multi-tenant key support)
-    const activeProvider = new ResendProvider(org.resend_api_key || undefined);
-    const emailDomain = org.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "crm.pyrexxai.com";
-    const fromAddress = `hello@${emailDomain}`;
-
-    // 2. Check if the user already exists by querying our synchronized public.users table [20]
-    const { data: existingUser, error: lookupError } = await supabaseAdmin
-      .from("users")
-      .select("id, full_name, email")
-      .eq("email", cleanEmail)
-      .maybeSingle();
-
-    if (lookupError) {
-      console.error("[Team Invite API] Error looking up user profile:", lookupError);
-    }
-
-    if (existingUser) {
-      const existingUserId = existingUser.id;
-
-      // Check if they already have an active membership in this specific organization
-      const { data: existingMember } = await supabaseAdmin
-        .from("memberships")
-        .select("id")
-        .eq("user_id", existingUserId)
-        .eq("org_id", org_id)
-        .maybeSingle();
-
-      if (existingMember) {
-        return NextResponse.json({ error: "This user is already a member of your team." }, { status: 400 });
-      }
-
-      // Generate a secure recovery/password-reset link for the existing user [21]
-      const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
-        type: 'recovery', 
-        email: cleanEmail,
-        options: { redirectTo: redirectUrl } 
-      });
-
-      if (linkError) {
-        console.error("[Team Invite API] Failed to generate recovery link:", linkError);
-        return NextResponse.json({ error: "Failed to generate workspace link: " + linkError.message }, { status: 500 });
-      }
-
-      const actionLink = linkData?.properties?.action_link;
-
-      if (!actionLink) {
-        return NextResponse.json({ error: "Failed to resolve secure action link." }, { status: 500 });
-      }
-
-      // Ensure their public profile row is registered in our CRM's users table
-      await supabaseAdmin.from('users').upsert({
-        id: existingUserId,
-        email: cleanEmail,
-        full_name: existingUser.full_name || cleanEmail.split('@')[0]
-      });
-
-      // Insert them into memberships with status 'pending' because they need to configure their password
-      const { error: membershipError } = await supabaseAdmin.from('memberships').insert({
-        user_id: existingUserId,
-        org_id: org_id,
-        role: role,
-        status: 'pending' 
-      });
-
-      if (membershipError) {
-        return NextResponse.json({ error: membershipError.message }, { status: 500 });
-      }
-
-      // Send the custom Welcome email with the secure recovery link [21]
-      const welcomeHtml = `
-        <div style="font-family: sans-serif; padding: 24px; max-width: 480px; border: 1px solid #E3E1DA; border-radius: 12px; background-color: #FFFFFF;">
-          <h2 style="color: #13141B; font-weight: 600;">Welcome to ${org.name}</h2>
-          <p style="color: #3A3D49; font-size: 14px; line-height: 1.5;">
-            You have been added to the <strong>${org.name}</strong> workspace on the Pyrexx AI CRM.
-          </p>
-          <p style="color: #3A3D49; font-size: 14px; line-height: 1.5; margin-bottom: 24px;">
-            To secure your access to this CRM workspace, please set a password for your account using the button below.
-          </p>
-          <div style="text-align: center;">
-            <a href="${actionLink}" style="background-color: #13141B; color: #F5F5F2; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 500; display: inline-block;">
-              Configure Password & Access
-            </a>
-          </div>
-        </div>
-      `;
-
-      const emailResult = await activeProvider.sendEmail({
-        to: cleanEmail,
-        from: fromAddress,
-        subject: `You've been added to ${org.name} on Pyrexx AI`,
-        text: `You have been added to ${org.name}. Set your password and access your workspace at ${actionLink}`,
-        html: welcomeHtml
-      });
-
-      // UPGRADE: Explicitly throw error if Resend fails, preventing silent success toasts
-      if (emailResult.error) {
-        console.error("[Team Invite API] Email send failed:", emailResult.error);
-        return NextResponse.json({ error: `User added to database, but Resend failed to dispatch email: ${emailResult.error}` }, { status: 500 });
-      }
-
-      return NextResponse.json({ success: true, isNewUser: false });
-    }
-
-    // 4. PATH B: User is brand new. Trigger the standard invitation token flow.
-    const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(cleanEmail, {
-      redirectTo: redirectUrl
-    });
-
-    if (inviteError) {
-      return NextResponse.json({ error: inviteError.message }, { status: 400 });
-    }
-
-    const newUserId = inviteData?.user?.id;
-    if (!newUserId) {
-      return NextResponse.json({ error: "Failed to generate user ID." }, { status: 500 });
-    }
-
-    await supabaseAdmin.from('users').upsert({ id: newUserId, email: cleanEmail, full_name: cleanEmail.split('@')[0] });
-
-    const { error: membershipError } = await supabaseAdmin.from('memberships').insert({
-      user_id: newUserId,
-      org_id: org_id,
-      role: role,
-      status: 'pending' 
-    });
-
-    if (membershipError) {
-      return NextResponse.json({ error: membershipError.message }, { status: 500 });
-    }
-
-    return NextResponse.json({ success: true, isNewUser: true, user: inviteData.user });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
-}
-</file>
-
-<file path="src/components/layout/AppLayout.tsx">
-"use client";
-import React from "react";
-import { Sidebar } from "./Sidebar";
-import { Topbar } from "./Topbar";
-import { MobileTabBar } from "./MobileTabBar";
-import { MobileDrawer } from "./MobileDrawer";
-import { CommandPalette } from "@/components/ui/CommandPalette";
-
-export function AppLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="h-screen w-full flex bg-paper overflow-hidden">
-      <Sidebar />
-      <div className="flex-1 flex flex-col min-w-0 h-full relative">
-        <Topbar />
-        <main className="flex-1 overflow-y-auto pb-[72px] md:pb-0 flex flex-col relative">
-          {children}
-        </main>
-      </div>
-      <MobileTabBar />
-      <MobileDrawer />
-      <CommandPalette />
     </div>
   );
 }
@@ -5357,6 +5156,114 @@ export const useAppStore = create<AppState>()(
     }
   )
 );
+</file>
+
+<file path="src/app/api/email/send/route.ts">
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { ResendProvider } from "@/lib/email/ResendProvider";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const { org_id, contact_id, sender_id, to, subject, content, htmlContent, attachments, from_slug } = body;
+
+    console.log("[Email API] Received dispatch request:", { org_id, contact_id, to, from_slug, sender_id });
+
+    if (!org_id || !contact_id || (!content && !htmlContent)) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    }
+
+    const { data: org, error: orgError } = await supabase
+      .from("organizations")
+      .select("slug, resend_api_key, sending_domain")
+      .eq("id", org_id)
+      .single();
+
+    if (orgError || !org) {
+      console.error("[Email API] Failed to resolve organization configurations:", orgError);
+      return NextResponse.json({ error: "Failed to resolve workspace configurations." }, { status: 400 });
+    }
+
+    let senderPrefix = from_slug; 
+    
+    if (sender_id) {
+      const { data: profile } = await supabase
+        .from("users")
+        .select("full_name")
+        .eq("id", sender_id)
+        .maybeSingle();
+
+      if (profile && profile.full_name) {
+        const firstName = profile.full_name.trim().split(/\s+/)[0];
+        senderPrefix = firstName.toLowerCase().replace(/[^a-z0-9]/g, "");
+      }
+    }
+
+    const activeProvider = new ResendProvider(org.resend_api_key || undefined);
+    
+    // Fallback updated to app.pyrexxai.com
+    const emailDomain = org.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "app.pyrexxai.com";
+    const fromAddress = `${senderPrefix}.${from_slug}@${emailDomain}`;
+
+    console.log("[Email API] Attempting send via dynamic provider...", { 
+      fromAddress, 
+      to, 
+      usingCustomKey: !!org.resend_api_key 
+    });
+
+    const emailResult = await activeProvider.sendEmail({
+      to,
+      from: fromAddress,
+      subject: subject || "Update from Pyrexx",
+      text: content,
+      html: htmlContent,
+      attachments: attachments || [],
+    });
+
+    if (emailResult.error) {
+      console.error("[Email API] Dynamic dispatch failed:", emailResult.error);
+      return NextResponse.json({ error: emailResult.error }, { status: 500 });
+    }
+
+    console.log("[Email API] Send success, updating database threads...");
+
+    let { data: thread } = await supabase
+      .from("threads")
+      .select("id")
+      .eq("org_id", org_id)
+      .eq("contact_id", contact_id)
+      .eq("channel", "email")
+      .single();
+
+    if (!thread) {
+      const { data: newThread } = await supabase
+        .from("threads")
+        .insert({ org_id, contact_id, channel: "email", subject })
+        .select("id")
+        .single();
+      thread = newThread;
+    }
+
+    await supabase.from("messages").insert({
+      thread_id: thread!.id,
+      sender_id,
+      direction: "outbound",
+      content: htmlContent || content,
+      attachments: attachments || []
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (err: any) {
+    console.error("[Email API Critical Crash]:", err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
 </file>
 
 <file path="src/app/settings/integrations/page.tsx">
@@ -5491,6 +5398,48 @@ export default function IntegrationsPage() {
       )}
       <Toaster position="top-right" richColors />
     </AppLayout>
+  );
+}
+</file>
+
+<file path="src/components/layout/AppLayout.tsx">
+"use client";
+import React, { useEffect, useState } from "react";
+import { Sidebar } from "./Sidebar";
+import { Topbar } from "./Topbar";
+import { MobileTabBar } from "./MobileTabBar";
+import { MobileDrawer } from "./MobileDrawer";
+import { CommandPalette } from "@/components/ui/CommandPalette";
+
+export function AppLayout({ children }: { children: React.ReactNode }) {
+  const [isMounted, setIsMounted] = useState(false);
+
+  // Prevents Zustand hydration mismatch & UI tearing on SSR
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  if (!isMounted) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-paper">
+        <div className="animate-spin w-6 h-6 border-2 border-berry border-t-transparent rounded-full" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-screen w-full flex bg-paper overflow-hidden">
+      <Sidebar />
+      <div className="flex-1 flex flex-col min-w-0 h-full relative">
+        <Topbar />
+        <main className="flex-1 overflow-y-auto pb-[72px] md:pb-0 flex flex-col relative">
+          {children}
+        </main>
+      </div>
+      <MobileTabBar />
+      <MobileDrawer />
+      <CommandPalette />
+    </div>
   );
 }
 </file>
@@ -5773,6 +5722,153 @@ export function Topbar() {
 }
 </file>
 
+<file path="src/app/api/team/invite/route.ts">
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { ResendProvider } from "@/lib/email/ResendProvider";
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export async function POST(req: Request) {
+  try {
+    const { email, role, org_id } = await req.json();
+
+    if (!email || !role || !org_id) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    // 1. Fetch the organization details
+    const { data: org, error: orgError } = await supabaseAdmin
+      .from("organizations")
+      .select("name, slug, resend_api_key, sending_domain")
+      .eq("id", org_id)
+      .single();
+
+    if (orgError || !org) {
+      return NextResponse.json({ error: "Failed to resolve organization." }, { status: 400 });
+    }
+
+    const activeProvider = new ResendProvider(org.resend_api_key || undefined);
+    const emailDomain = org.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "app.pyrexxai.com";
+    const fromAddress = `hello@${emailDomain}`;
+
+    // 2. Check if user already exists
+    let targetUserId = null;
+    let isNewUser = false;
+    let userFullName = cleanEmail.split('@')[0];
+
+    const { data: existingUser } = await supabaseAdmin
+      .from("users")
+      .select("id, full_name")
+      .eq("email", cleanEmail)
+      .maybeSingle();
+
+    if (existingUser) {
+      targetUserId = existingUser.id;
+      userFullName = existingUser.full_name || userFullName;
+      
+      const { data: existingMember } = await supabaseAdmin
+        .from("memberships")
+        .select("id")
+        .eq("user_id", targetUserId)
+        .eq("org_id", org_id)
+        .maybeSingle();
+
+      if (existingMember) {
+        return NextResponse.json({ error: "This user is already a member of your team." }, { status: 400 });
+      }
+    } else {
+      // 3. User is brand new. Provision them instantly via Admin API (bypassing native emails)
+      const { data: newUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
+        email: cleanEmail,
+        email_confirm: true // Instantly confirm so they can log in once they set a password
+      });
+
+      if (createError || !newUser.user) {
+        return NextResponse.json({ error: "Failed to provision new user account." }, { status: 500 });
+      }
+
+      targetUserId = newUser.user.id;
+      isNewUser = true;
+    }
+
+    // 4. Ensure public profile exists
+    await supabaseAdmin.from('users').upsert({
+      id: targetUserId,
+      email: cleanEmail,
+      full_name: userFullName
+    });
+
+    // 5. Insert into memberships
+    const { error: membershipError } = await supabaseAdmin.from('memberships').upsert({
+      user_id: targetUserId,
+      org_id: org_id,
+      role: role,
+      status: 'pending' 
+    }, { onConflict: 'user_id, org_id' });
+
+    if (membershipError) {
+      return NextResponse.json({ error: membershipError.message }, { status: 500 });
+    }
+
+    // 6. Generate our highly secure Custom Token
+    const { data: tokenRecord, error: tokenError } = await supabaseAdmin
+      .from("auth_tokens")
+      .insert({ user_id: targetUserId })
+      .select("token")
+      .single();
+
+    if (tokenError || !tokenRecord) {
+      return NextResponse.json({ error: "Failed to generate security token." }, { status: 500 });
+    }
+
+    // 7. Construct our fully controlled URL
+    const origin = req.headers.get("origin") || "https://app.pyrexxai.com";
+    const actionLink = `${origin}/auth/update-password?token=${tokenRecord.token}`;
+
+    // 8. Send the customized Resend Email
+    const welcomeHtml = `
+      <div style="font-family: sans-serif; padding: 24px; max-width: 480px; border: 1px solid #E3E1DA; border-radius: 12px; background-color: #FFFFFF;">
+        <h2 style="color: #13141B; font-weight: 600;">Welcome to ${org.name}</h2>
+        <p style="color: #3A3D49; font-size: 14px; line-height: 1.5;">
+          You have been added to the <strong>${org.name}</strong> workspace on the Pyrexx AI CRM.
+        </p>
+        <p style="color: #3A3D49; font-size: 14px; line-height: 1.5; margin-bottom: 24px;">
+          To secure your access to this CRM workspace, please set a password for your account using the button below.
+        </p>
+        <div style="text-align: center;">
+          <a href="${actionLink}" style="background-color: #13141B; color: #F5F5F2; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 500; display: inline-block;">
+            Configure Password & Access
+          </a>
+        </div>
+      </div>
+    `;
+
+    const emailResult = await activeProvider.sendEmail({
+      to: cleanEmail,
+      from: fromAddress,
+      subject: `You've been added to ${org.name} on Pyrexx AI`,
+      text: `You have been added to ${org.name}. Set your password and access your workspace at ${actionLink}`,
+      html: welcomeHtml
+    });
+
+    if (emailResult.error) {
+      console.error("[Team Invite API] Email send failed:", emailResult.error);
+      return NextResponse.json({ error: `User added to database, but Resend failed to dispatch email: ${emailResult.error}` }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true, isNewUser });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+</file>
+
 <file path="src/app/settings/team/page.tsx">
 "use client";
 import React, { useState, useEffect } from "react";
@@ -5800,18 +5896,12 @@ export default function TeamSettingsPage() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("rep");
   const [isInviting, setIsInviting] = useState(false);
-  const [isMounted, setIsMounted] = useState(false);
-  
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
 
   const fetchTeam = async () => {
     if (!activeOrgId) return;
     
     logger.info('TeamSettingsPage', 'Fetching team members...');
     
-    // Selecting status column
     const { data, error } = await supabase
       .from("memberships")
       .select("role, status, created_at, users(id, full_name, email)")
@@ -5836,6 +5926,7 @@ export default function TeamSettingsPage() {
     if (!inviteEmail || !activeOrgId) return;
     
     setIsInviting(true);
+    // Preserved the secure backend integration
     const res = await fetch("/api/team/invite", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -5879,7 +5970,8 @@ export default function TeamSettingsPage() {
     }
   };
 
-  const isManager = ['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '');
+  // RESTORED: Standard logic from the summary
+  const isManager = userRole === 'owner' || userRole === 'manager';
 
   return (
     <AppLayout>
@@ -5888,13 +5980,12 @@ export default function TeamSettingsPage() {
           eyebrow="Settings"
           title="Team Management" 
           action={
-            isMounted && isManager ? (
+            isManager ? (
               <Button icon={UserPlus} onClick={() => setIsInviteOpen(true)}>Invite Member</Button>
             ) : null
           }
         />
 
-        {/* Desktop Table */}
         <div className="hidden md:block rounded-xl overflow-x-auto border border-line bg-white shadow-card">
           <table className="w-full text-sm font-body min-w-[600px]">
             <thead className="bg-paperDim border-b border-line">
@@ -5936,9 +6027,8 @@ export default function TeamSettingsPage() {
                       )}
                     </td>
                     <td className="px-5 py-3">
-                      {/* UPGRADE: Display a pending badge if status is pending */}
-                      <Badge variant={m.status === 'active' ? 'sage' : 'amber'}>
-                        {m.status?.toUpperCase() || 'ACTIVE'}
+                      <Badge variant={m.status === 'active' || !m.status ? 'sage' : 'amber'}>
+                        {m.status ? m.status.toUpperCase() : 'ACTIVE'}
                       </Badge>
                     </td>
                     <td className="px-5 py-3 text-right">
@@ -5955,7 +6045,6 @@ export default function TeamSettingsPage() {
           </table>
         </div>
 
-        {/* Mobile Stacked Cards */}
         <div className="md:hidden space-y-3">
           {members.map((m) => {
             const targetId = m.users?.id;
@@ -5982,8 +6071,8 @@ export default function TeamSettingsPage() {
                     </select>
                   ) : <span className="px-2 py-1 rounded text-xs uppercase font-medium bg-paperDim text-slate">{m.role}</span>}
                   
-                  <Badge variant={m.status === 'active' ? 'sage' : 'amber'}>
-                    {m.status?.toUpperCase() || 'ACTIVE'}
+                  <Badge variant={m.status === 'active' || !m.status ? 'sage' : 'amber'}>
+                    {m.status ? m.status.toUpperCase() : 'ACTIVE'}
                   </Badge>
 
                   {isManager && !isSelf && (
@@ -6185,7 +6274,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const supabase = createClient();
   const router = useRouter();
   
-  // Extract all state and setters from our persisted global store
+  // RESTORED: Directly using the hooks ensures full React reactivity across the app
   const { 
     activeOrgId, setActiveOrgId, 
     currentWorkspace, setWorkspace, 
@@ -6223,7 +6312,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUserName(profile?.full_name || fallbackName);
         setUserEmail(profile?.email || user.email || "");
 
-        // Fetch organization memberships
+        // Fetch organization memberships EXACTLY as they were in the original summary
         const { data: memberships, error: membershipError } = await supabase
           .from('memberships')
           .select('role, org_id, organizations(id, name, type)')
@@ -6252,7 +6341,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
           setWorkspaces(availableWorkspaces);
 
-          // Read localStorage synchronously to prevent Zustand hydration mismatch loops on Next.js boot
+          // Read localStorage synchronously
           try {
             const persistedData = localStorage.getItem('pyrexx-crm-storage');
             if (persistedData) {
@@ -6273,10 +6362,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setUser(user.id, currentMembership?.role || 'rep');
             logger.info('AuthProvider', 'Restored validated workspace from storage', { targetOrgId });
           } else {
-            // Safe fallback if nothing is saved or the saved workspace is invalid
             const fallbackOrg = agencyMembership || memberships[0];
-            
-            // FIX: Safely unwrap fallbackOrg's organizations to satisfy strict TS compilers
             const resolvedOrg = Array.isArray(fallbackOrg.organizations) 
               ? fallbackOrg.organizations[0] 
               : fallbackOrg.organizations;

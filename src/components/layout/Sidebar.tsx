@@ -1,5 +1,5 @@
 "use client";
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { useAppStore } from "@/store/useAppStore";
 import { PulseTrace } from "@/components/ui/PulseTrace";
 import { Avatar } from "@/components/ui/Avatar";
@@ -42,6 +42,9 @@ export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const nav = currentWorkspace === "agency" ? AGENCY_NAV : CLINIC_NAV;
+
+  const [isMounted, setIsMounted] = useState(false);
+  useEffect(() => setIsMounted(true), []);
 
   const handleWorkspaceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const selectedOrgId = e.target.value;
@@ -140,8 +143,8 @@ export function Sidebar() {
       <div className="p-4 flex items-center gap-2.5 border-t border-inkSoft">
         <Avatar name={userName} size={30} />
         <div className="text-xs font-body truncate">
-          <div className="text-paper font-medium truncate">{userName}</div>
-          <div className="text-slate capitalize truncate">{userRole}</div>
+          <div className="text-paper font-medium truncate">{isMounted ? userName : "Loading..."}</div>
+          <div className="text-slate capitalize truncate">{isMounted ? userRole : ""}</div>
         </div>
       </div>
     </div>
