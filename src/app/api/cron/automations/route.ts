@@ -26,7 +26,8 @@ export async function GET(req: Request) {
       return NextResponse.json({ message: "No active automations found." });
     }
 
-    const emailDomain = process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "crm.pyrexxai.com";
+    // Fallback updated to app.pyrexxai.com
+    const emailDomain = process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "app.pyrexxai.com";
     let emailsSent = 0;
 
     for (const auto of activeAutomations) {
@@ -46,7 +47,6 @@ export async function GET(req: Request) {
         .is("last_auto_followup", null);
 
       if (staleDeals && staleDeals.length > 0) {
-        // Run emails concurrently to prevent Vercel timeout limits
         const emailPromises = staleDeals.map(async (deal) => {
           const contact = deal.contacts as any;
           if (!contact || !contact.email) return;

@@ -26,7 +26,6 @@ export function AccountFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
 
   const nameValue = watch("name");
 
-  // Auto-generate slug from name
   useEffect(() => {
     if (nameValue) {
       const generatedSlug = nameValue
@@ -43,11 +42,10 @@ export function AccountFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
   const onSubmit = async (data: AccountFormValues) => {
     setIsSubmitting(true);
     
-    // Call the Postgres RPC we created to handle atomic creation
     const { data: orgId, error } = await supabase.rpc("create_sub_account", {
       p_name: data.name,
       p_slug: data.slug,
-      p_email_local_part: data.slug // Used for {slug}@crm.pyrexxai.com
+      p_email_local_part: data.slug 
     });
 
     setIsSubmitting(false);
@@ -82,7 +80,8 @@ export function AccountFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
         <div className="p-3 rounded-lg bg-paperDim border border-line text-xs font-body text-slate flex flex-col gap-1">
           <p>This will provision an isolated workspace and inbox.</p>
           <p>
-            Inbound Routing: <span className="font-mono font-medium text-ink">{slugValue || "slug"}@crm.pyrexxai.com</span>
+            {/* Visual fix for email display domain */}
+            Inbound Routing: <span className="font-mono font-medium text-ink">{slugValue || "slug"}@app.pyrexxai.com</span>
           </p>
         </div>
         

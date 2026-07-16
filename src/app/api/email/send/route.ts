@@ -18,7 +18,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    // 1. Fetch organization email configurations (Dynamic keys & domains!)
     const { data: org, error: orgError } = await supabase
       .from("organizations")
       .select("slug, resend_api_key, sending_domain")
@@ -30,8 +29,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Failed to resolve workspace configurations." }, { status: 400 });
     }
 
-    // 2. Resolve Rep First Name to use as a personalized sender prefix
-    let senderPrefix = from_slug; // Fallback to org slug if profile is missing
+    let senderPrefix = from_slug; 
     
     if (sender_id) {
       const { data: profile } = await supabase
@@ -41,19 +39,15 @@ export async function POST(req: Request) {
         .maybeSingle();
 
       if (profile && profile.full_name) {
-        // Extract first name, convert to lowercase, and strip non-alphanumeric characters
         const firstName = profile.full_name.trim().split(/\s+/)[0];
         senderPrefix = firstName.toLowerCase().replace(/[^a-z0-9]/g, "");
       }
     }
 
-    // 3. Initialize Resend dynamically using the tenant's key (falls back to Vercel env if null)
     const activeProvider = new ResendProvider(org.resend_api_key || undefined);
     
-    // Resolve which domain to send from
-    const emailDomain = org.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "crm.pyrexxai.com";
-    
-    // Construct the personalized sender address: E.g., peter.pyrexxai@crm.pyrexxai.com
+    // Fallback updated to app.pyrexxai.com
+    const emailDomain = org.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "app.pyrexxai.com";
     const fromAddress = `${senderPrefix}.${from_slug}@${emailDomain}`;
 
     console.log("[Email API] Attempting send via dynamic provider...", { 

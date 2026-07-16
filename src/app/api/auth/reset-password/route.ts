@@ -16,8 +16,10 @@ export async function POST(req: Request) {
     }
 
     const cleanEmail = email.trim().toLowerCase();
-    const origin = req.headers.get("origin") || "https://crm.pyrexxai.com";
+    const origin = req.headers.get("origin") || "https://app.pyrexxai.com";
     const redirectUrl = `${origin}/auth/update-password`;
+
+    console.log("[Reset Password API] Generating recovery link for:", { cleanEmail, redirectUrl });
 
     // 1. Generate the secure recovery link via Admin API
     const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
@@ -27,28 +29,29 @@ export async function POST(req: Request) {
     });
 
     if (linkError) {
+      console.error("[Reset Password API] Failed to generate recovery link:", linkError);
       return NextResponse.json({ error: "Failed to generate security link: " + linkError.message }, { status: 500 });
     }
 
     const actionLink = linkData?.properties?.action_link;
+
     if (!actionLink) {
       return NextResponse.json({ error: "Failed to resolve secure action link." }, { status: 500 });
     }
 
-    // 2. FIX: Fetch the root Agency API keys dynamically (Removed hardcoded slug)
+    // 2. Fetch the root Pyrexx AI organization details to configure SMTP/Resend
     const { data: org } = await supabaseAdmin
       .from("organizations")
       .select("name, slug, resend_api_key, sending_domain")
-      .eq("type", "agency")
-      .limit(1)
-      .maybeSingle();
+      .eq("slug", "pyrexxai")
+      .single();
 
     const activeProvider = new ResendProvider(org?.resend_api_key || undefined);
-    const emailDomain = org?.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "crm.pyrexxai.com";
+    const emailDomain = org?.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "app.pyrexxai.com";
     const fromAddress = `security@${emailDomain}`;
 
     const resetHtml = `
-      <div style="font-family: sans-serif; padding: 24px; max-width: 480px; border: 1px solid #E3E1DA; border-radius: 12px; background-color: #FFFFFF;">
+      <div style="font-family: sans-serif; padding: 24px; max-width: 480px; border: 1px solid #E3E1DA; border-radius: 12px; background-color: #FFFFFF; box-shadow: 0px 4px 12px rgba(19, 20, 27, 0.03);">
         <h2 style="color: #13141B; font-weight: 600; font-size: 20px; margin-top: 0;">Reset Your Password</h2>
         <p style="color: #3A3D49; font-size: 14px; line-height: 1.5;">
           We received a request to reset the password for your Pyrexx CRM account.
@@ -67,6 +70,8 @@ export async function POST(req: Request) {
       </div>
     `;
 
+    console.log("[Reset Password API] Sending custom email via Resend...", { fromAddress, to: cleanEmail });
+
     const emailResult = await activeProvider.sendEmail({
       to: cleanEmail,
       from: fromAddress,
@@ -76,11 +81,14 @@ export async function POST(req: Request) {
     });
 
     if (emailResult.error) {
-      return NextResponse.json({ error: `Security link generated, but email failed: ${emailResult.error}` }, { status: 500 });
+      console.error("[Reset Password API] Email send failed:", emailResult.error);
+      return NextResponse.json({ error: `Security link generated, but Resend failed to dispatch email: ${emailResult.error}` }, { status: 500 });
     }
 
+    console.log("[Reset Password API] Security email dispatched successfully.");
     return NextResponse.json({ success: true });
   } catch (err: any) {
+    console.error("[Reset Password API Exception]:", err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }

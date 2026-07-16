@@ -19,7 +19,6 @@ export default function AccountsPage() {
   const fetchAccounts = async () => {
     if (!activeOrgId) return;
 
-    // Constrain to only child-clinics belonging to this specific active agency
     const { data, error } = await supabase
       .from("organizations")
       .select("*")
@@ -60,7 +59,8 @@ export default function AccountsPage() {
               {accounts.map((a) => (
                 <tr key={a.id} className="border-b border-line hover:bg-paperDim/50 transition-colors">
                   <td className="px-5 py-3 font-medium text-ink">{a.name}</td>
-                  <td className="px-5 py-3 text-slate font-mono">{a.email_local_part}@crm.pyrexxai.com</td>
+                  {/* Visual fix for email display domain */}
+                  <td className="px-5 py-3 text-slate font-mono">{a.email_local_part}@app.pyrexxai.com</td>
                   <td className="px-5 py-3 text-slate">{a.plan}</td>
                   <td className="px-5 py-3">
                     <Badge variant={a.status === "Active" ? "sage" : "amber"}>{a.status}</Badge>
@@ -89,7 +89,7 @@ export default function AccountsPage() {
                 <span className="text-sm font-medium text-ink font-body">{a.name}</span>
                 <Badge variant={a.status === "Active" ? "sage" : "amber"}>{a.status}</Badge>
               </div>
-              <div className="text-xs text-slate font-mono mb-1">{a.email_local_part}@crm.pyrexxai.com</div>
+              <div className="text-xs text-slate font-mono mb-1">{a.email_local_part}@app.pyrexxai.com</div>
               <div className="text-xs text-slate font-body">Plan: {a.plan}</div>
             </div>
           ))}
