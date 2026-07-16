@@ -4,8 +4,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
-import { ChevronLeft, Mail, Phone, Building2, CheckCircle2, Circle, Edit3, Trash2, X, Save } from "lucide-react";
+import { ChevronLeft, Mail, Phone, CheckCircle2, Circle, Edit3, Trash2, X, Save } from "lucide-react";
 import { createClient } from "@/lib/supabase";
 import { useParams, useRouter } from "next/navigation";
 import { useAppStore } from "@/store/useAppStore";
@@ -22,8 +21,8 @@ export default function ContactDetailPage() {
   const [timeline, setTimeline] = useState<any[]>([]);
   const [noteContent, setNoteContent] = useState("");
   const [isSavingNote, setIsSavingNote] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
-  // Edit Mode State
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState({ first_name: "", last_name: "", email: "", phone: "" });
   const [isSavingEdit, setIsSavingEdit] = useState(false);
@@ -87,8 +86,21 @@ export default function ContactDetailPage() {
 
   const handleDeleteContact = async () => {
     if (!window.confirm("Are you sure you want to delete this contact? This will permanently delete all their deals, tasks, and history.")) return;
-    
+    setIsDeleting(true);
+
+    // Manual cleanup prevents PostGres Foreign Key constraint errors 
+    await supabase.from("deals").delete().eq("contact_id", id);
+    await supabase.from("tasks").delete().eq("contact_id", id);
+    await supabase.from("activities").delete().eq("contact_id", id);
+    const { data: threads } = await supabase.from("threads").select("id").eq("contact_id", id);
+    if (threads && threads.length > 0) {
+        const threadIds = threads.map(t => t.id);
+        await supabase.from("messages").delete().in("thread_id", threadIds);
+        await supabase.from("threads").delete().eq("contact_id", id);
+    }
+
     const { error } = await supabase.from("contacts").delete().eq("id", id);
+    setIsDeleting(false);
     if (error) {
       toast.error("Failed to delete contact");
     } else {
@@ -162,8 +174,8 @@ export default function ContactDetailPage() {
             ) : (
               <>
                 {(userRole === 'owner' || userRole === 'manager') && (
-                  <button onClick={handleDeleteContact} className="p-2 text-slate hover:text-berry transition-colors rounded-lg hover:bg-berrySoft/50" title="Delete Contact">
-                    <Trash2 size={18} />
+                  <button onClick={handleDeleteContact} disabled={isDeleting} className="p-2 text-slate hover:text-berry transition-colors rounded-lg hover:bg-berrySoft/50 disabled:opacity-50" title="Delete Contact">
+                    {isDeleting ? <div className="w-4 h-4 border-2 border-slate border-t-transparent rounded-full animate-spin" /> : <Trash2 size={18} />}
                   </button>
                 )}
                 <Button variant="outline" icon={Edit3} onClick={() => setIsEditing(true)}>Edit</Button>

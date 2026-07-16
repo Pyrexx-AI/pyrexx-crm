@@ -14,6 +14,7 @@ export default function TasksPage() {
   const supabase = createClient();
   const [tasks, setTasks] = useState<any[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
 
   const fetchTasks = async () => {
     if (!activeOrgId || !userId) return;
@@ -31,10 +32,19 @@ export default function TasksPage() {
 
   const deleteTask = async (taskId: string) => {
     if (!window.confirm("Delete this task?")) return;
-    setTasks(prev => prev.filter(t => t.id !== taskId));
+    setDeletingTaskId(taskId);
+    
     const { error } = await supabase.from("tasks").delete().eq("id", taskId);
-    if (error) { toast.error("Failed to delete"); fetchTasks(); }
-    else toast.success("Task deleted");
+    
+    setDeletingTaskId(null);
+    if (error) { 
+      toast.error("Failed to delete"); 
+      fetchTasks(); 
+    }
+    else {
+      setTasks(prev => prev.filter(t => t.id !== taskId));
+      toast.success("Task deleted");
+    }
   };
 
   const todayStr = new Date().toISOString().split("T")[0];
@@ -70,8 +80,12 @@ export default function TasksPage() {
                         {group !== "Today" && group !== "Completed" && ` • Due: ${new Date(t.due_date).toLocaleDateString()}`}
                       </div>
                     </div>
-                    <button onClick={() => deleteTask(t.id)} className="text-slate hover:text-berry opacity-0 group-hover:opacity-100 transition-opacity p-2">
-                      <Trash2 size={16} />
+                    <button 
+                      onClick={() => deleteTask(t.id)} 
+                      disabled={deletingTaskId === t.id}
+                      className="text-slate hover:text-berry opacity-0 group-hover:opacity-100 transition-opacity p-2 disabled:opacity-50"
+                    >
+                      {deletingTaskId === t.id ? <div className="w-4 h-4 border-2 border-slate border-t-transparent rounded-full animate-spin" /> : <Trash2 size={16} />}
                     </button>
                   </div>
                 ))}

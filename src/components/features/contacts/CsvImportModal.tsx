@@ -13,7 +13,7 @@ type Step = "UPLOAD" | "MAP" | "IMPORTING";
 const STANDARD_FIELDS = [
   { key: "first_name", label: "First Name" },
   { key: "last_name", label: "Last Name" },
-  { key: "full_name", label: "Full Name (Auto-Split)" }, // Supported for split logic
+  { key: "full_name", label: "Full Name (Auto-Split)" },
   { key: "email", label: "Email Address" },
   { key: "phone", label: "Phone Number" },
   { key: "position", label: "Position / Job Title" },
@@ -37,7 +37,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
     
     setFile(selectedFile);
 
-    // Fetch existing custom field definitions
     const { data: extFields } = await supabase.from("custom_field_definitions").select("key, name").eq("org_id", activeOrgId).eq("target_type", "contact");
     setCustomFields(extFields || []);
 
@@ -50,7 +49,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
           setHeaders(extractedHeaders);
           setCsvData(results.data);
           
-          // INTELLIGENT FUZZY AUTO-MAPPING
           const initialMap: Record<string, string> = {};
           extractedHeaders.forEach(h => {
             const cleanHeader = h.toLowerCase().replace(/[\s_-]/g, "");
@@ -70,7 +68,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
             } else if (["stage", "dealstage"].includes(cleanHeader)) {
               initialMap[h] = "stage";
             } else {
-              // Fallback to mapping as custom field
               initialMap[h] = `custom:${cleanHeader}`;
             }
           });
@@ -122,8 +119,8 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
           const customKey = target.replace("custom:", "");
           contactRecord.custom_fields[customKey] = value;
         } else if (target === "full_name" && value) {
-          // INTELLIGENT NAME SPLITTER
-          const nameParts = value.trim().split(/\s+/);
+          // Robust null check before string splits
+          const nameParts = value?.toString().trim().split(/\s+/) || [];
           contactRecord.first_name = nameParts[0] || "Unknown";
           contactRecord.last_name = nameParts.slice(1).join(" ") || "Contact";
         } else {
@@ -131,7 +128,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
         }
       });
 
-      // Default safety
       contactRecord.first_name = contactRecord.first_name || "Unknown";
       contactRecord.last_name = contactRecord.last_name || "Contact";
       contactRecord.stage = contactRecord.stage || "New Lead";
@@ -164,7 +160,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
 
   return (
     <Modal isOpen={isOpen} onClose={() => { if(step !== "IMPORTING") onClose(); }} title="Smart Import Wizard">
-      
       {step === "UPLOAD" && (
         <div className="flex flex-col items-center justify-center border-2 border-dashed border-line rounded-xl p-8 bg-paperDim text-center">
           <Upload size={32} className="text-slate mb-3" />

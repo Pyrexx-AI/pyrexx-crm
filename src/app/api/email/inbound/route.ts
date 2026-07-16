@@ -6,6 +6,12 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+// Safely extract email from "Name <email@domain.com>" or just "email@domain.com"
+const extractEmail = (str: string) => {
+  const match = str.match(/<([^>]+)>/);
+  return match ? match[1].trim().toLowerCase() : str.trim().toLowerCase();
+};
+
 export async function POST(req: Request) {
   try {
     const payload = await req.json();
@@ -18,10 +24,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing to/from addresses" }, { status: 400 });
     }
 
-    const toAddress = Array.isArray(to) ? to[0] : to;
-    const localPart = toAddress.split("@")[0].toLowerCase();
+    const rawTo = Array.isArray(to) ? to[0] : to;
+    const toAddress = extractEmail(rawTo);
+    const localPart = toAddress.split("@")[0];
 
-    // UPGRADE: Use pop() to safely isolate the last segment in a multi-dot rep name
+    // Use pop() to safely isolate the last segment in a multi-dot rep name
     // E.g., peter.gambo.pyrexxai -> "pyrexxai"
     let slug = localPart;
     if (localPart.includes(".")) {
@@ -37,8 +44,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
     }
 
-    const senderEmailMatch = from.match(/<(.+)>/);
-    const senderEmail = senderEmailMatch ? senderEmailMatch[1].toLowerCase() : from.toLowerCase();
+    const senderEmail = extractEmail(from);
     
     let contactId = null;
     const { data: existingContact } = await supabase

@@ -7,10 +7,9 @@ interface PipelineColumnProps {
   stage: string;
   deals: any[];
   onDealClick: (deal: any) => void;
-  hiddenCount?: number; // <-- Added to show "Archived" count
 }
 
-export function PipelineColumn({ stage, deals, onDealClick, hiddenCount = 0 }: PipelineColumnProps) {
+export function PipelineColumn({ stage, deals, onDealClick }: PipelineColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: stage });
 
   const stageColorMap: Record<string, string> = {
@@ -23,7 +22,6 @@ export function PipelineColumn({ stage, deals, onDealClick, hiddenCount = 0 }: P
   };
 
   const stageColor = stageColorMap[stage] || "#6B6E77";
-  // The value is calculated off the sliced array so UI matches the displayed cards
   const stageValue = deals.reduce((sum, d) => sum + Number(d.value), 0);
 
   return (
@@ -31,7 +29,7 @@ export function PipelineColumn({ stage, deals, onDealClick, hiddenCount = 0 }: P
       <div className="pt-2 pb-3 px-1 mb-2 sticky top-0 bg-paper z-10" style={{ borderTop: `3px solid ${stageColor}` }}>
         <div className="flex items-center justify-between mb-1">
           <span className="text-sm font-medium text-ink font-body uppercase tracking-[0.05em]">{stage}</span>
-          <span className="text-xs text-slate font-mono bg-paperDim px-1.5 py-0.5 rounded">{deals.length + hiddenCount}</span>
+          <span className="text-xs text-slate font-mono bg-paperDim px-1.5 py-0.5 rounded">{deals.length}</span>
         </div>
         <div className="text-xs text-slate font-mono">${stageValue.toLocaleString()}</div>
       </div>
@@ -40,11 +38,6 @@ export function PipelineColumn({ stage, deals, onDealClick, hiddenCount = 0 }: P
         {deals.map(deal => (
           <PipelineCard key={deal.id} deal={deal} onClick={onDealClick} />
         ))}
-        {hiddenCount > 0 && (
-          <div className="text-center p-3 text-xs text-slate font-body bg-paperDim/50 rounded-lg border border-dashed border-line">
-            + {hiddenCount} older deals archived
-          </div>
-        )}
       </div>
     </div>
   );

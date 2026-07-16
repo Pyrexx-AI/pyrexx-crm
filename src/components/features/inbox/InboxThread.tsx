@@ -26,20 +26,23 @@ export function InboxThread({ threadId, contactId, contactName, contactEmail, or
   const [isSending, setIsSending] = useState(false);
   const [attachments, setAttachments] = useState<{ filename: string; path: string }[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [editorKey, setEditorKey] = useState(0); // Force Tiptap reset
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const endOfMessagesRef = useRef<HTMLDivElement>(null);
 
-  const fetchMessages = async () => {
-    const { data } = await supabase
-      .from("messages")
-      .select("*")
-      .eq("thread_id", threadId)
-      .order("created_at", { ascending: true });
-    if (data) setMessages(data);
-  };
-
   useEffect(() => {
+    let isMounted = true;
+    
+    const fetchMessages = async () => {
+      const { data } = await supabase
+        .from("messages")
+        .select("*")
+        .eq("thread_id", threadId)
+        .order("created_at", { ascending: true });
+      if (isMounted && data) setMessages(data);
+    };
+
     fetchMessages();
     supabase.from("threads").update({ is_unread: false }).eq("id", threadId).then();
     
@@ -50,10 +53,12 @@ export function InboxThread({ threadId, contactId, contactName, contactEmail, or
       })
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
-  }, [threadId]);
+    return () => { 
+      isMounted = false; 
+      supabase.removeChannel(channel); 
+    };
+  }, [threadId, supabase]);
 
-  // Auto-scroll to bottom on new message
   useEffect(() => {
     endOfMessagesRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -67,7 +72,7 @@ export function InboxThread({ threadId, contactId, contactName, contactEmail, or
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const fileExt = file.name.split('.').pop();
+      const fileExt = file.name.includes('.') ? file.name.split('.').pop() : 'file';
       const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
       const filePath = `${orgId}/${fileName}`;
 
@@ -110,12 +115,10 @@ export function InboxThread({ threadId, contactId, contactName, contactEmail, or
     });
 
     if (res.ok) {
-      // Because TipTap doesn't easily wipe externally without a ref, we reset our local state
-      // Real implementation might force a key re-render on the editor
       setHtmlReply("");
       setTextReply("");
       setAttachments([]);
-      fetchMessages();
+      setEditorKey(prev => prev + 1); // Forcibly clears uncontrolled Tiptap instance
     } else {
       toast.error("Failed to send email");
     }
@@ -135,7 +138,6 @@ export function InboxThread({ threadId, contactId, contactName, contactEmail, or
         </div>
       </div>
 
-      {/* Message Feed Area */}
       <div className="flex-1 px-4 md:px-8 py-6 space-y-4 overflow-y-auto min-h-0">
         {messages.map((msg) => {
           const isOutbound = msg.direction === "outbound";
@@ -148,13 +150,11 @@ export function InboxThread({ threadId, contactId, contactName, contactEmail, or
                     : "bg-white text-ink rounded-tl-sm border border-line shadow-sm"
                 }`}
               >
-                {/* Render Rich HTML safely */}
                 <div 
                   dangerouslySetInnerHTML={{ __html: msg.content }} 
                   className={`prose prose-sm max-w-none ${isOutbound ? 'prose-invert' : ''} [&>p]:m-0 [&>p]:mb-2 last:[&>p]:mb-0`} 
                 />
 
-                {/* Render Attachments if any */}
                 {msg.attachments && msg.attachments.length > 0 && (
                   <div className={`mt-3 pt-3 border-t flex flex-col gap-2 ${isOutbound ? 'border-inkSoft' : 'border-line'}`}>
                     {msg.attachments.map((att: any, i: number) => (
@@ -183,10 +183,7 @@ export function InboxThread({ threadId, contactId, contactName, contactEmail, or
         <div ref={endOfMessagesRef} />
       </div>
 
-      {/* Compose Area */}
       <div className="px-4 md:px-8 py-4 border-t border-line bg-paper flex-shrink-0">
-        
-        {/* Attachment Previews */}
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-3">
             {attachments.map((att, i) => (
@@ -204,6 +201,7 @@ export function InboxThread({ threadId, contactId, contactName, contactEmail, or
         <div className="flex items-end gap-3">
           <div className="flex-1">
             <RichTextEditor 
+              key={editorKey}
               content={htmlReply} 
               onChange={(html, text) => { setHtmlReply(html); setTextReply(text); }} 
             />

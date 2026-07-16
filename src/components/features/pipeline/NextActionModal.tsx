@@ -24,10 +24,11 @@ interface NextActionModalProps {
   contactId: string;
   newStage: string;
   onCancel: () => void;
+  onError: () => void;
   onSuccess: () => void;
 }
 
-export function NextActionModal({ isOpen, dealId, contactId, newStage, onCancel, onSuccess }: NextActionModalProps) {
+export function NextActionModal({ isOpen, dealId, contactId, newStage, onCancel, onError, onSuccess }: NextActionModalProps) {
   const supabase = createClient();
   const { activeOrgId, userId } = useAppStore();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -56,6 +57,7 @@ export function NextActionModal({ isOpen, dealId, contactId, newStage, onCancel,
     if (dealError) {
       toast.error("Failed to move deal");
       setIsSubmitting(false);
+      onError(); // Safely reverts the optimistic UI
       return;
     }
 

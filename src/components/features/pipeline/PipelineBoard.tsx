@@ -27,7 +27,7 @@ export function PipelineBoard() {
       .from("deals")
       .select(`*, contacts (first_name, last_name)`)
       .eq("org_id", activeOrgId)
-      .order("updated_at", { ascending: false }); // Important for Infinite Kanban logic
+      .order("updated_at", { ascending: false }); 
       
     if (!error && data) setDeals(data);
   };
@@ -84,22 +84,14 @@ export function PipelineBoard() {
         <div className="flex gap-4 md:gap-6 h-full snap-x snap-mandatory md:snap-none w-max">
           <DndContext collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
             {STAGES.map((stage) => {
-              // The "Infinite Kanban" Fix
-              let stageDeals = deals.filter(d => d.stage === stage);
-              let hiddenCount = 0;
-              
-              if (stage === "Active Client" && stageDeals.length > 15) {
-                hiddenCount = stageDeals.length - 15;
-                stageDeals = stageDeals.slice(0, 15);
-              }
-
+              // Safely filter without buggy slice logic. Handled by CSS overflow.
+              const stageDeals = deals.filter(d => d.stage === stage);
               return (
                 <PipelineColumn 
                   key={stage} 
                   stage={stage} 
                   deals={stageDeals} 
                   onDealClick={(d) => setEditingDeal(d)}
-                  hiddenCount={hiddenCount}
                 />
               );
             })}
@@ -111,7 +103,15 @@ export function PipelineBoard() {
       <EditDealModal isOpen={!!editingDeal} deal={editingDeal} onClose={() => setEditingDeal(null)} onSuccess={fetchDeals} />
       
       {pendingMove && (
-        <NextActionModal isOpen={true} dealId={pendingMove.dealId} contactId={pendingMove.contactId} newStage={pendingMove.newStage} onCancel={handleCancelMove} onSuccess={handleConfirmMove} />
+        <NextActionModal 
+          isOpen={true} 
+          dealId={pendingMove.dealId} 
+          contactId={pendingMove.contactId} 
+          newStage={pendingMove.newStage} 
+          onCancel={handleCancelMove}
+          onError={handleCancelMove} 
+          onSuccess={handleConfirmMove} 
+        />
       )}
     </div>
   );

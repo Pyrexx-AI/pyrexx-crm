@@ -7,19 +7,24 @@ import { Badge } from "@/components/ui/Badge";
 import { UserPlus, MoreHorizontal } from "lucide-react";
 import { AccountFormModal } from "@/components/features/accounts/AccountFormModal";
 import { createClient } from "@/lib/supabase";
+import { useAppStore } from "@/store/useAppStore";
 import { Toaster } from "sonner";
 
 export default function AccountsPage() {
   const supabase = createClient();
+  const { activeOrgId } = useAppStore();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [accounts, setAccounts] = useState<any[]>([]);
 
   const fetchAccounts = async () => {
-    // Fetch organizations that are of type 'clinic' and where the current user is a member
+    if (!activeOrgId) return;
+
+    // Constrain to only child-clinics belonging to this specific active agency
     const { data, error } = await supabase
       .from("organizations")
       .select("*")
       .eq("type", "clinic")
+      .eq("parent_org_id", activeOrgId)
       .order("created_at", { ascending: false });
       
     if (!error && data) setAccounts(data);
@@ -27,7 +32,7 @@ export default function AccountsPage() {
 
   useEffect(() => {
     fetchAccounts();
-  }, []);
+  }, [activeOrgId]);
 
   return (
     <AppLayout>
@@ -42,7 +47,6 @@ export default function AccountsPage() {
           } 
         />
 
-        {/* Desktop Table */}
         <div className="hidden md:block rounded-xl overflow-hidden border border-line bg-white shadow-card">
           <table className="w-full text-sm font-body">
             <thead className="bg-paperDim border-b border-line">
@@ -78,7 +82,6 @@ export default function AccountsPage() {
           </table>
         </div>
 
-        {/* Mobile View */}
         <div className="md:hidden space-y-3">
           {accounts.map((a) => (
             <div key={a.id} className="rounded-xl p-4 bg-white border border-line shadow-card">

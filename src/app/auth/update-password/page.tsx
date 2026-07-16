@@ -5,13 +5,11 @@ import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { createClient } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
-import { useAppStore } from "@/store/useAppStore";
 import { toast, Toaster } from "sonner";
 
 export default function UpdatePasswordPage() {
   const supabase = createClient();
   const router = useRouter();
-  const { activeOrgId } = useAppStore();
   
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -44,13 +42,14 @@ export default function UpdatePasswordPage() {
       toast.error("Failed to update password", { description: error.message });
       setIsLoading(false);
     } else {
-      // UPGRADE: Update the representative's membership status to ACTIVE
-      if (tempUserId && activeOrgId) {
+      // Securely activate ALL pending memberships for this user
+      // Eliminates dependency on activeOrgId which is null on new sessions
+      if (tempUserId) {
         await supabase
           .from("memberships")
           .update({ status: 'active' })
           .eq("user_id", tempUserId)
-          .eq("org_id", activeOrgId);
+          .eq("status", "pending");
       }
 
       toast.success("Password secured! Welcome to Pyrexx.");

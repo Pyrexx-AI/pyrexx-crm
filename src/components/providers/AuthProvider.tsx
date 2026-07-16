@@ -9,7 +9,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const supabase = createClient();
   const router = useRouter();
   
-  // Extract all state and setters from our persisted global store
   const { 
     activeOrgId, setActiveOrgId, 
     currentWorkspace, setWorkspace, 
@@ -37,7 +36,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        // Fetch User Profile from public.users with fallback support
         const { data: profile, error: profileError } = await supabase.from('users').select('full_name, email').eq('id', user.id).maybeSingle();
         if (profileError) {
           logger.error('AuthProvider', 'Failed to fetch user profile', profileError);
@@ -47,7 +45,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUserName(profile?.full_name || fallbackName);
         setUserEmail(profile?.email || user.email || "");
 
-        // Fetch organization memberships
         const { data: memberships, error: membershipError } = await supabase
           .from('memberships')
           .select('role, org_id, organizations(id, name, type)')
@@ -59,7 +56,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (memberships && memberships.length > 0) {
           const availableWorkspaces: Workspace[] = [];
-          let targetOrgId = activeOrgId; 
           let agencyMembership: any = null;
 
           memberships.forEach((m: any) => {
@@ -76,31 +72,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
           setWorkspaces(availableWorkspaces);
 
-          // Read localStorage synchronously to prevent Zustand hydration mismatch loops on Next.js boot
-          try {
-            const persistedData = localStorage.getItem('pyrexx-crm-storage');
-            if (persistedData) {
-              const parsed = JSON.parse(persistedData);
-              if (parsed?.state?.activeOrgId) {
-                targetOrgId = parsed.state.activeOrgId;
-              }
-            }
-          } catch (storageError) {
-            logger.error('AuthProvider', 'Failed to parse localStorage', storageError);
-          }
+          // By this point Zustand has successfully hydrated naturally
+          const isSavedOrgValid = availableWorkspaces.find(w => w.id === activeOrgId);
 
-          const isSavedOrgValid = availableWorkspaces.find(w => w.id === targetOrgId);
-
-          if (isSavedOrgValid && targetOrgId) {
-            setActiveOrgId(targetOrgId);
-            const currentMembership = memberships.find((m: any) => m.org_id === targetOrgId);
+          if (isSavedOrgValid && activeOrgId) {
+            const currentMembership = memberships.find((m: any) => m.org_id === activeOrgId);
             setUser(user.id, currentMembership?.role || 'rep');
-            logger.info('AuthProvider', 'Restored validated workspace from storage', { targetOrgId });
+            logger.info('AuthProvider', 'Restored validated workspace from storage', { activeOrgId });
           } else {
-            // Safe fallback if nothing is saved or the saved workspace is invalid
             const fallbackOrg = agencyMembership || memberships[0];
-            
-            // FIX: Safely unwrap fallbackOrg's organizations to satisfy strict TS compilers
             const resolvedOrg = Array.isArray(fallbackOrg.organizations) 
               ? fallbackOrg.organizations[0] 
               : fallbackOrg.organizations;
