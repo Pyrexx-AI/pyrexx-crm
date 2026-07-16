@@ -16,8 +16,6 @@ export async function POST(req: Request) {
     }
 
     const cleanEmail = email.trim().toLowerCase();
-    const origin = req.headers.get("origin") || "https://app.pyrexxai.com";
-    const redirectUrl = `${origin}/auth/update-password`;
 
     // 1. Fetch the organization details
     const { data: org, error: orgError } = await supabaseAdmin
@@ -34,7 +32,11 @@ export async function POST(req: Request) {
     const emailDomain = org.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "app.pyrexxai.com";
     const fromAddress = `hello@${emailDomain}`;
 
-    // 2. Check if they already have an active membership to block duplicates
+    // 2. Check if user already exists
+    let targetUserId = null;
+    let isNewUser = false;
+    let userFullName = cleanEmail.split('@')[0];
+
     const { data: existingUser } = await supabaseAdmin
       .from("users")
       .select("id, full_name")
@@ -42,66 +44,39 @@ export async function POST(req: Request) {
       .maybeSingle();
 
     if (existingUser) {
+      targetUserId = existingUser.id;
+      userFullName = existingUser.full_name || userFullName;
+      
       const { data: existingMember } = await supabaseAdmin
         .from("memberships")
         .select("id")
-        .eq("user_id", existingUser.id)
+        .eq("user_id", targetUserId)
         .eq("org_id", org_id)
         .maybeSingle();
 
       if (existingMember) {
         return NextResponse.json({ error: "This user is already a member of your team." }, { status: 400 });
       }
-    }
-
-    let actionLink;
-    let targetUserId;
-    let isNewUser = false;
-
-    // 3. Attempt to generate an invite link (silently creates user in Supabase without sending its native email)
-    const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'invite',
-      email: cleanEmail,
-      options: { redirectTo: redirectUrl }
-    });
-
-    if (inviteError) {
-      // If user exists in Auth, Supabase rejects the invite type. Fallback to recovery.
-      if (
-        inviteError.message.toLowerCase().includes("already registered") || 
-        inviteError.message.toLowerCase().includes("already exists") || 
-        inviteError.message.toLowerCase().includes("user already exists")
-      ) {
-        const { data: recoveryData, error: recoveryError } = await supabaseAdmin.auth.admin.generateLink({
-          type: 'recovery',
-          email: cleanEmail,
-          options: { redirectTo: redirectUrl }
-        });
-
-        if (recoveryError) {
-          return NextResponse.json({ error: "Failed to generate workspace link: " + recoveryError.message }, { status: 500 });
-        }
-
-        actionLink = recoveryData?.properties?.action_link;
-        targetUserId = recoveryData?.user?.id;
-      } else {
-        return NextResponse.json({ error: inviteError.message }, { status: 400 });
-      }
     } else {
-      actionLink = inviteData?.properties?.action_link;
-      targetUserId = inviteData?.user?.id;
-      isNewUser = true;
-    }
+      // 3. User is brand new. Provision them instantly via Admin API (bypassing native emails)
+      const { data: newUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
+        email: cleanEmail,
+        email_confirm: true // Instantly confirm so they can log in once they set a password
+      });
 
-    if (!actionLink || !targetUserId) {
-      return NextResponse.json({ error: "Failed to resolve secure action link or user ID." }, { status: 500 });
+      if (createError || !newUser.user) {
+        return NextResponse.json({ error: "Failed to provision new user account." }, { status: 500 });
+      }
+
+      targetUserId = newUser.user.id;
+      isNewUser = true;
     }
 
     // 4. Ensure public profile exists
     await supabaseAdmin.from('users').upsert({
       id: targetUserId,
       email: cleanEmail,
-      full_name: existingUser?.full_name || cleanEmail.split('@')[0]
+      full_name: userFullName
     });
 
     // 5. Insert into memberships
@@ -116,7 +91,22 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: membershipError.message }, { status: 500 });
     }
 
-    // 6. Send the customized Resend Email
+    // 6. Generate our highly secure Custom Token
+    const { data: tokenRecord, error: tokenError } = await supabaseAdmin
+      .from("auth_tokens")
+      .insert({ user_id: targetUserId })
+      .select("token")
+      .single();
+
+    if (tokenError || !tokenRecord) {
+      return NextResponse.json({ error: "Failed to generate security token." }, { status: 500 });
+    }
+
+    // 7. Construct our fully controlled URL
+    const origin = req.headers.get("origin") || "https://app.pyrexxai.com";
+    const actionLink = `${origin}/auth/update-password?token=${tokenRecord.token}`;
+
+    // 8. Send the customized Resend Email
     const welcomeHtml = `
       <div style="font-family: sans-serif; padding: 24px; max-width: 480px; border: 1px solid #E3E1DA; border-radius: 12px; background-color: #FFFFFF;">
         <h2 style="color: #13141B; font-weight: 600;">Welcome to ${org.name}</h2>

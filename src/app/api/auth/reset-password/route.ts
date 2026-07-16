@@ -16,30 +16,38 @@ export async function POST(req: Request) {
     }
 
     const cleanEmail = email.trim().toLowerCase();
+
+    // 1. Look up the user in our public users table
+    const { data: userProfile } = await supabaseAdmin
+      .from("users")
+      .select("id")
+      .eq("email", cleanEmail)
+      .maybeSingle();
+
+    if (!userProfile) {
+      // Return success anyway to prevent email enumeration attacks
+      return NextResponse.json({ success: true });
+    }
+
+    // 2. Generate a highly secure custom token
+    const { data: tokenRecord, error: tokenError } = await supabaseAdmin
+      .from("auth_tokens")
+      .insert({ user_id: userProfile.id })
+      .select("token")
+      .single();
+
+    if (tokenError || !tokenRecord) {
+      console.error("[Reset Password API] Failed to generate custom token:", tokenError);
+      return NextResponse.json({ error: "Failed to generate security token." }, { status: 500 });
+    }
+
+    // 3. Construct our 100% custom, controlled URL
     const origin = req.headers.get("origin") || "https://app.pyrexxai.com";
-    const redirectUrl = `${origin}/auth/update-password`;
+    const actionLink = `${origin}/auth/update-password?token=${tokenRecord.token}`;
 
-    console.log("[Reset Password API] Generating recovery link for:", { cleanEmail, redirectUrl });
+    console.log("[Reset Password API] Custom link generated:", { cleanEmail, actionLink });
 
-    // 1. Generate the secure recovery link via Admin API
-    const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'recovery',
-      email: cleanEmail,
-      options: { redirectTo: redirectUrl }
-    });
-
-    if (linkError) {
-      console.error("[Reset Password API] Failed to generate recovery link:", linkError);
-      return NextResponse.json({ error: "Failed to generate security link: " + linkError.message }, { status: 500 });
-    }
-
-    const actionLink = linkData?.properties?.action_link;
-
-    if (!actionLink) {
-      return NextResponse.json({ error: "Failed to resolve secure action link." }, { status: 500 });
-    }
-
-    // 2. Fetch the root Pyrexx AI organization details to configure SMTP/Resend
+    // 4. Fetch the root Pyrexx AI organization details for email config
     const { data: org } = await supabaseAdmin
       .from("organizations")
       .select("name, slug, resend_api_key, sending_domain")
@@ -57,7 +65,7 @@ export async function POST(req: Request) {
           We received a request to reset the password for your Pyrexx CRM account.
         </p>
         <p style="color: #3A3D49; font-size: 14px; line-height: 1.5; margin-bottom: 24px;">
-          Click the secure button below to establish a new password. This link is single-use and will expire shortly.
+          Click the secure button below to establish a new password. This link is single-use and will expire in 24 hours.
         </p>
         <div style="text-align: center;">
           <a href="${actionLink}" style="background-color: #13141B; color: #F5F5F2; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 500; display: inline-block;">
@@ -70,8 +78,6 @@ export async function POST(req: Request) {
       </div>
     `;
 
-    console.log("[Reset Password API] Sending custom email via Resend...", { fromAddress, to: cleanEmail });
-
     const emailResult = await activeProvider.sendEmail({
       to: cleanEmail,
       from: fromAddress,
@@ -82,10 +88,9 @@ export async function POST(req: Request) {
 
     if (emailResult.error) {
       console.error("[Reset Password API] Email send failed:", emailResult.error);
-      return NextResponse.json({ error: `Security link generated, but Resend failed to dispatch email: ${emailResult.error}` }, { status: 500 });
+      return NextResponse.json({ error: `Security link generated, but Resend failed to dispatch email.` }, { status: 500 });
     }
 
-    console.log("[Reset Password API] Security email dispatched successfully.");
     return NextResponse.json({ success: true });
   } catch (err: any) {
     console.error("[Reset Password API Exception]:", err);
