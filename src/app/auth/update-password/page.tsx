@@ -5,23 +5,26 @@ import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { createClient } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
+import { useAppStore } from "@/store/useAppStore";
 import { toast, Toaster } from "sonner";
 
 export default function UpdatePasswordPage() {
   const supabase = createClient();
   const router = useRouter();
+  const { activeOrgId } = useAppStore();
+  
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isVerifying, setIsVerifying] = useState(true);
+  const [tempUserId, setTempUserId] = useState<string | null>(null);
 
-  // When a user clicks an invite link, Supabase sets the session via URL hash. 
-  // We wait to ensure they are actually authenticated before letting them set a password.
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) {
         toast.error("Invalid or expired invite link. Redirecting...");
         setTimeout(() => router.push('/auth/login'), 2000);
       } else {
+        setTempUserId(user.id);
         setIsVerifying(false);
       }
     });
@@ -41,6 +44,15 @@ export default function UpdatePasswordPage() {
       toast.error("Failed to update password", { description: error.message });
       setIsLoading(false);
     } else {
+      // UPGRADE: Update the representative's membership status to ACTIVE
+      if (tempUserId && activeOrgId) {
+        await supabase
+          .from("memberships")
+          .update({ status: 'active' })
+          .eq("user_id", tempUserId)
+          .eq("org_id", activeOrgId);
+      }
+
       toast.success("Password secured! Welcome to Pyrexx.");
       setTimeout(() => router.push("/"), 1500);
     }

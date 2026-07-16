@@ -5,11 +5,13 @@ import { SectionTitle } from "@/components/ui/SectionTitle";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Avatar } from "@/components/ui/Avatar";
+import { Badge } from "@/components/ui/Badge";
 import { UserPlus, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase";
 import { useAppStore } from "@/store/useAppStore";
 import { toast, Toaster } from "sonner";
 import { Modal } from "@/components/ui/Modal";
+import { logger } from "@/lib/logger";
 
 export default function TeamSettingsPage() {
   const supabase = createClient();
@@ -22,43 +24,85 @@ export default function TeamSettingsPage() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("rep");
   const [isInviting, setIsInviting] = useState(false);
-  
   const [isMounted, setIsMounted] = useState(false);
-  useEffect(() => setIsMounted(true), []);
+  
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   const fetchTeam = async () => {
     if (!activeOrgId) return;
-    const { data } = await supabase.from("memberships").select("role, created_at, users(id, full_name, email)").eq("org_id", activeOrgId).order("created_at", { ascending: true });
+    
+    logger.info('TeamSettingsPage', 'Fetching team members...');
+    
+    // Selecting status column
+    const { data, error } = await supabase
+      .from("memberships")
+      .select("role, status, created_at, users(id, full_name, email)")
+      .eq("org_id", activeOrgId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      logger.error('TeamSettingsPage', 'Fetch error', error);
+      toast.error("Failed to load team data.");
+      return;
+    }
+
     if (data) setMembers(data);
   };
 
-  useEffect(() => { fetchTeam(); }, [activeOrgId]);
+  useEffect(() => {
+    fetchTeam();
+  }, [activeOrgId]);
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inviteEmail || !activeOrgId) return;
+    
     setIsInviting(true);
-    const res = await fetch("/api/team/invite", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: inviteEmail, role: inviteRole, org_id: activeOrgId }) });
+    const res = await fetch("/api/team/invite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: inviteEmail, role: inviteRole, org_id: activeOrgId })
+    });
+
     const data = await res.json();
     setIsInviting(false);
-    if (res.ok) { toast.success("Invite sent successfully!"); setIsInviteOpen(false); setInviteEmail(""); setInviteRole("rep"); fetchTeam(); }
-    else toast.error(data.error || "Failed to invite user");
+
+    if (res.ok) {
+      toast.success(data.isNewUser ? "Invitation sent!" : "Existing Pyrexx user added directly!");
+      setIsInviteOpen(false);
+      setInviteEmail("");
+      setInviteRole("rep");
+      fetchTeam();
+    } else {
+      toast.error(data.error || "Failed to invite user");
+    }
   };
 
   const handleRoleChange = async (targetUserId: string, newRole: string) => {
     const { error } = await supabase.from("memberships").update({ role: newRole }).eq("user_id", targetUserId).eq("org_id", activeOrgId);
-    if (error) toast.error("Failed to update role");
-    else { toast.success("Role updated"); fetchTeam(); }
+    if (error) {
+      logger.error('TeamSettingsPage', 'Role update error', error);
+      toast.error("Failed to update role");
+    } else { 
+      toast.success("Role updated"); 
+      fetchTeam(); 
+    }
   };
 
   const handleRemoveMember = async (targetUserId: string) => {
     if (!window.confirm("Are you sure you want to revoke this user's access?")) return;
     const { error } = await supabase.from("memberships").delete().eq("user_id", targetUserId).eq("org_id", activeOrgId);
-    if (error) toast.error("Failed to remove member");
-    else { toast.success("User removed"); fetchTeam(); }
+    if (error) {
+      logger.error('TeamSettingsPage', 'Remove member error', error);
+      toast.error("Failed to remove member");
+    } else { 
+      toast.success("User removed"); 
+      fetchTeam(); 
+    }
   };
 
-  // FIX: Include Admin globally
   const isManager = ['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '');
 
   return (
@@ -81,7 +125,7 @@ export default function TeamSettingsPage() {
               <tr>
                 <th className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em] w-1/2">Team Member</th>
                 <th className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em] w-1/4">Role</th>
-                <th className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em] w-1/4">Joined</th>
+                <th className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em] w-1/4">Status</th>
                 <th className="text-right px-5 py-3 text-xs uppercase text-slate tracking-[0.05em]">Actions</th>
               </tr>
             </thead>
@@ -115,7 +159,12 @@ export default function TeamSettingsPage() {
                         <span className="px-2 py-1 rounded text-xs uppercase font-medium bg-paperDim text-slate">{m.role}</span>
                       )}
                     </td>
-                    <td className="px-5 py-3 text-slate">{new Date(m.created_at).toLocaleDateString()}</td>
+                    <td className="px-5 py-3">
+                      {/* UPGRADE: Display a pending badge if status is pending */}
+                      <Badge variant={m.status === 'active' ? 'sage' : 'amber'}>
+                        {m.status?.toUpperCase() || 'ACTIVE'}
+                      </Badge>
+                    </td>
                     <td className="px-5 py-3 text-right">
                       {isManager && !isSelf && (
                         <button onClick={() => handleRemoveMember(targetId)} className="p-2 text-slate hover:text-berry opacity-0 group-hover:opacity-100 transition-all rounded-lg hover:bg-berrySoft/50" title="Revoke Access">
@@ -130,7 +179,7 @@ export default function TeamSettingsPage() {
           </table>
         </div>
 
-        {/* Mobile Stacked Cards (Fixes the cluttered UI) */}
+        {/* Mobile Stacked Cards */}
         <div className="md:hidden space-y-3">
           {members.map((m) => {
             const targetId = m.users?.id;
@@ -157,6 +206,10 @@ export default function TeamSettingsPage() {
                     </select>
                   ) : <span className="px-2 py-1 rounded text-xs uppercase font-medium bg-paperDim text-slate">{m.role}</span>}
                   
+                  <Badge variant={m.status === 'active' ? 'sage' : 'amber'}>
+                    {m.status?.toUpperCase() || 'ACTIVE'}
+                  </Badge>
+
                   {isManager && !isSelf && (
                     <button onClick={() => handleRemoveMember(targetId)} className="text-berry text-xs font-medium px-2 py-1 rounded hover:bg-berrySoft/50">
                       Revoke

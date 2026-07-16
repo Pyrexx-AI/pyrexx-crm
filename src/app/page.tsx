@@ -29,10 +29,19 @@ export default function DashboardPage() {
   }, [activeOrgId, currentWorkspace]);
 
   const fetchAgencyData = async () => {
-    // 1. Fetch Deals for Funnel & Value
+    // 1. Fetch Deals
     const { data: deals } = await supabase.from("deals").select("*").eq("org_id", activeOrgId);
     
-    // 2. Fetch Recent Activities (Audit Log) for the feed and Leaderboard
+    // 2. Fetch active memberships to filter the leaderboard
+    const { data: activeMembers } = await supabase
+      .from("memberships")
+      .select("user_id")
+      .eq("org_id", activeOrgId)
+      .eq("status", "active"); // <-- Only evaluate active reps!
+
+    const activeMemberIds = activeMembers?.map(m => m.user_id) || [];
+
+    // 3. Fetch Recent Activities (Audit Log)
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -55,8 +64,11 @@ export default function DashboardPage() {
         count: deals.filter(d => d.stage === stage).length
       }));
 
-      // 3. Compute Leaderboard (Activities today grouped by Rep)
-      const todaysActivities = activities.filter(a => new Date(a.created_at) >= today);
+      // 4. Compute Leaderboard (Filtered to active members only)
+      const todaysActivities = activities.filter(
+        a => new Date(a.created_at) >= today && activeMemberIds.includes(a.actor_id)
+      );
+      
       const repStats: Record<string, number> = {};
       
       todaysActivities.forEach(a => {
@@ -73,7 +85,7 @@ export default function DashboardPage() {
         activeDeals: activeDeals.length, 
         winRate: `${winRate}%`,
         chartData, 
-        activities: activities.slice(0, 10), // Keep last 10 for the feed
+        activities: activities.slice(0, 10), 
         leaderboard 
       });
     }
@@ -89,7 +101,6 @@ export default function DashboardPage() {
 
         {currentWorkspace === "agency" ? (
           <>
-            {/* Live Metrics (Fake deltas removed) */}
             <div className="flex gap-3 md:gap-4 mb-8 flex-wrap">
               <StatCard label="Open pipeline value" value={`$${metrics.openValue.toLocaleString()}`} icon={TrendingUp} />
               <StatCard label="Active deals" value={metrics.activeDeals} icon={Columns} />
@@ -99,7 +110,6 @@ export default function DashboardPage() {
 
             <div className="grid grid-cols-1 md:grid-cols-6 gap-6">
               
-              {/* Funnel Chart */}
               <div className="md:col-span-4 rounded-xl p-6 bg-white border border-line shadow-card flex flex-col">
                 <div className="text-sm font-medium mb-6 text-ink font-body">Pipeline by stage</div>
                 <div className="h-[240px] w-full flex-1">
@@ -115,10 +125,7 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {/* Leaderboard & Feed Column */}
               <div className="md:col-span-2 flex flex-col gap-6">
-                
-                {/* Rep Leaderboard */}
                 <div className="rounded-xl p-5 bg-ink border border-inkSoft shadow-card">
                   <div className="flex items-center gap-2 mb-4 text-paper">
                     <Users size={16} />
@@ -142,7 +149,6 @@ export default function DashboardPage() {
                   </div>
                 </div>
 
-                {/* System Audit Feed */}
                 <div className="rounded-xl p-5 bg-white border border-line shadow-card flex-1 overflow-hidden flex flex-col">
                   <div className="text-sm font-medium mb-4 text-ink font-body">Recent System Logs</div>
                   <div className="space-y-4 flex-1 overflow-y-auto pr-2">

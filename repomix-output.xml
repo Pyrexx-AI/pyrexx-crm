@@ -416,100 +416,6 @@ export async function GET(req: Request) {
 }
 </file>
 
-<file path="src/app/api/email/inbound/route.ts">
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-
-// Uses Service Role to safely write to DB from an external webhook
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-export async function POST(req: Request) {
-  try {
-    const payload = await req.json();
-
-    // Resend's inbound webhook shape: { type: 'email.received', data: { to: '...', from: '...', subject: '...', text: '...' } }
-    // Note: Some parsers send raw JSON directly. We handle both.
-    const emailData = payload.data || payload; 
-    const { from, to, subject, text, html } = emailData;
-
-    if (!from || !to) {
-      return NextResponse.json({ error: "Missing to/from addresses" }, { status: 400 });
-    }
-
-    // 1. Extract the organization slug from the "to" address (e.g. bloomspa@app.pyrexxai.com -> bloomspa)
-    const toAddress = Array.isArray(to) ? to[0] : to;
-    const slug = toAddress.split("@")[0].toLowerCase();
-
-    const { data: org } = await supabase.from("organizations").select("id").eq("slug", slug).single();
-    if (!org) return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
-
-    // 2. Extract sender email and find Contact (Create if it's a new inbound inquiry)
-    const senderEmailMatch = from.match(/<(.+)>/);
-    const senderEmail = senderEmailMatch ? senderEmailMatch[1].toLowerCase() : from.toLowerCase();
-    
-    let contactId = null;
-    const { data: existingContact } = await supabase
-      .from("contacts")
-      .select("id")
-      .eq("org_id", org.id)
-      .eq("email", senderEmail)
-      .single();
-
-    if (existingContact) {
-      contactId = existingContact.id;
-    } else {
-      // Auto-create lead for inbound email
-      const { data: newContact } = await supabase.from("contacts").insert({
-        org_id: org.id,
-        first_name: senderEmail.split("@")[0], // Fallback name
-        last_name: "Inquiry",
-        email: senderEmail,
-        type: "lead",
-        stage: "New Lead"
-      }).select("id").single();
-      contactId = newContact!.id;
-    }
-
-    // 3. Find or create Thread
-    let threadId = null;
-    const { data: existingThread } = await supabase
-      .from("threads")
-      .select("id")
-      .eq("org_id", org.id)
-      .eq("contact_id", contactId)
-      .eq("channel", "email")
-      .single();
-
-    if (existingThread) {
-      threadId = existingThread.id;
-    } else {
-      const { data: newThread } = await supabase.from("threads").insert({
-        org_id: org.id,
-        contact_id: contactId,
-        channel: "email",
-        subject: subject || "Inbound Conversation"
-      }).select("id").single();
-      threadId = newThread!.id;
-    }
-
-    // 4. Insert the Message (Our Postgres trigger will auto-update the thread timestamp and unread status)
-    await supabase.from("messages").insert({
-      thread_id: threadId,
-      direction: "inbound",
-      content: text || html || "Empty Message content"
-    });
-
-    return NextResponse.json({ success: true });
-  } catch (error: any) {
-    console.error("Inbound Webhook Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-}
-</file>
-
 <file path="src/app/auth/login/page.tsx">
 "use client";
 import React, { useState } from "react";
@@ -1913,58 +1819,6 @@ export function cn(...inputs: ClassValue[]) {
     "postcss": "^8",
     "tailwindcss": "^3.3.0",
     "typescript": "^5"
-  }
-}
-</file>
-
-<file path="src/app/api/team/invite/route.ts">
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-export async function POST(req: Request) {
-  try {
-    const { email, role, org_id } = await req.json();
-
-    if (!email || !role || !org_id) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
-    }
-
-    // 1. Send the Invite via Supabase Admin API
-    const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(email);
-
-    if (inviteError) {
-      return NextResponse.json({ error: inviteError.message }, { status: 400 });
-    }
-
-    // FIX: Safely unwrap the user ID to prevent strict null-check build failures
-    const userId = inviteData?.user?.id;
-    
-    if (!userId) {
-      return NextResponse.json({ error: "Failed to resolve user ID from invite response." }, { status: 500 });
-    }
-
-    // 2. Ensure they exist in public.users
-    await supabaseAdmin.from('users').upsert({ id: userId, email: email, full_name: email.split('@')[0] });
-
-    // 3. Assign them to the organization in memberships
-    const { error: membershipError } = await supabaseAdmin.from('memberships').insert({
-      user_id: userId,
-      org_id: org_id,
-      role: role
-    });
-
-    if (membershipError) {
-      return NextResponse.json({ error: membershipError.message }, { status: 500 });
-    }
-
-    return NextResponse.json({ success: true, user: inviteData.user });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
 </file>
@@ -3681,78 +3535,172 @@ export const config = {
 }
 </file>
 
-<file path="src/app/api/email/send/route.ts">
+<file path="src/app/api/email/inbound/route.ts">
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { ResendProvider } from "@/lib/email/ResendProvider";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-const emailProvider = new ResendProvider();
-
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const { org_id, contact_id, sender_id, to, subject, content, htmlContent, attachments, from_slug } = body;
+    const payload = await req.json();
+    const emailData = payload.data || payload; 
+    const { from, to, subject, text, html } = emailData;
 
-    console.log("[Email API] Received dispatch request:", { org_id, contact_id, to, from_slug });
+    console.log("[Inbound Webhook] Received email packet:", { from, to, subject });
 
-    if (!org_id || !contact_id || (!content && !htmlContent)) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    if (!from || !to) {
+      return NextResponse.json({ error: "Missing to/from addresses" }, { status: 400 });
     }
 
-    const emailDomain = process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "crm.pyrexxai.com";
-    const fromAddress = `${from_slug}@${emailDomain}`;
+    const toAddress = Array.isArray(to) ? to[0] : to;
+    const localPart = toAddress.split("@")[0].toLowerCase();
 
-    console.log("[Email API] Attempting send via provider...", { fromAddress, to });
-
-    const emailResult = await emailProvider.sendEmail({
-      to,
-      from: fromAddress,
-      subject: subject || "Update from Pyrexx",
-      text: content,
-      html: htmlContent,
-      attachments: attachments || [],
-    });
-
-    if (emailResult.error) {
-      console.error("[Email API] Dispatch failed:", emailResult.error);
-      return NextResponse.json({ error: emailResult.error }, { status: 500 });
+    // UPGRADE: Use pop() to safely isolate the last segment in a multi-dot rep name
+    // E.g., peter.gambo.pyrexxai -> "pyrexxai"
+    let slug = localPart;
+    if (localPart.includes(".")) {
+      const parts = localPart.split(".");
+      slug = parts.pop() || localPart;
     }
 
-    console.log("[Email API] Send success, updating database threads...");
+    console.log("[Inbound Webhook] Resolving organization via slug:", { localPart, resolvedSlug: slug });
 
-    let { data: thread } = await supabase
+    const { data: org } = await supabase.from("organizations").select("id").eq("slug", slug).single();
+    if (!org) {
+      console.error("[Inbound Webhook] Organization slug lookup failed:", { slug });
+      return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
+    }
+
+    const senderEmailMatch = from.match(/<(.+)>/);
+    const senderEmail = senderEmailMatch ? senderEmailMatch[1].toLowerCase() : from.toLowerCase();
+    
+    let contactId = null;
+    const { data: existingContact } = await supabase
+      .from("contacts")
+      .select("id")
+      .eq("org_id", org.id)
+      .eq("email", senderEmail)
+      .single();
+
+    if (existingContact) {
+      contactId = existingContact.id;
+    } else {
+      console.log("[Inbound Webhook] Contact not found, auto-creating lead...", { senderEmail });
+      const { data: newContact } = await supabase.from("contacts").insert({
+        org_id: org.id,
+        first_name: senderEmail.split("@")[0], 
+        last_name: "Inquiry",
+        email: senderEmail,
+        type: "lead",
+        stage: "New Lead"
+      }).select("id").single();
+      contactId = newContact!.id;
+    }
+
+    let threadId = null;
+    const { data: existingThread } = await supabase
       .from("threads")
       .select("id")
-      .eq("org_id", org_id)
-      .eq("contact_id", contact_id)
+      .eq("org_id", org.id)
+      .eq("contact_id", contactId)
       .eq("channel", "email")
       .single();
 
-    if (!thread) {
-      const { data: newThread } = await supabase
-        .from("threads")
-        .insert({ org_id, contact_id, channel: "email", subject })
-        .select("id")
-        .single();
-      thread = newThread;
+    if (existingThread) {
+      threadId = existingThread.id;
+    } else {
+      console.log("[Inbound Webhook] Active conversation thread not found, provisioning...");
+      const { data: newThread } = await supabase.from("threads").insert({
+        org_id: org.id,
+        contact_id: contactId,
+        channel: "email",
+        subject: subject || "Inbound Conversation"
+      }).select("id").single();
+      threadId = newThread!.id;
     }
 
-    await supabase.from("messages").insert({
-      thread_id: thread!.id,
-      sender_id,
-      direction: "outbound",
-      content: htmlContent || content,
-      attachments: attachments || []
+    const { error: insertError } = await supabase.from("messages").insert({
+      thread_id: threadId,
+      direction: "inbound",
+      content: text || html || "Empty Message content"
     });
 
+    if (insertError) {
+      console.error("[Inbound Webhook] Failed to write message to database:", insertError);
+      return NextResponse.json({ error: "Failed to log message." }, { status: 500 });
+    }
+
+    console.log("[Inbound Webhook] Message logged successfully. Realtime listeners updated.");
     return NextResponse.json({ success: true });
+  } catch (error: any) {
+    console.error("[Inbound Webhook Critical Exception]:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+</file>
+
+<file path="src/app/api/team/invite/route.ts">
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export async function POST(req: Request) {
+  try {
+    const { email, role, org_id } = await req.json();
+
+    if (!email || !role || !org_id) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    }
+
+    // UPGRADE: Dynamically extract the origin header from the request
+    // This supports seamless local development (localhost) and production (crm.pyrexxai.com) redirections
+    const origin = req.headers.get("origin") || "https://crm.pyrexxai.com";
+    const redirectUrl = `${origin}/auth/update-password`;
+
+    console.log("[Team Invite API] Initiating invite with explicit redirect:", { 
+      email, 
+      redirectUrl 
+    });
+
+    // Pass the explicit redirect destination to the Supabase Auth invitation SDK
+    const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
+      redirectTo: redirectUrl // <-- Tells Supabase exactly which whitelisted URL to redirect to
+    });
+
+    if (inviteError) {
+      return NextResponse.json({ error: inviteError.message }, { status: 400 });
+    }
+
+    const userId = inviteData?.user?.id;
+    
+    if (!userId) {
+      return NextResponse.json({ error: "Failed to resolve user ID from invite response." }, { status: 500 });
+    }
+
+    // 2. Ensure they exist in public.users
+    await supabaseAdmin.from('users').upsert({ id: userId, email: email, full_name: email.split('@')[0] });
+
+    // 3. Assign them to the organization in memberships
+    const { error: membershipError } = await supabaseAdmin.from('memberships').insert({
+      user_id: userId,
+      org_id: org_id,
+      role: role
+    });
+
+    if (membershipError) {
+      return NextResponse.json({ error: membershipError.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true, user: inviteData.user });
   } catch (err: any) {
-    console.error("[Email API Critical Crash]:", err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
@@ -4739,44 +4687,6 @@ export function PipelineBoard() {
 }
 </file>
 
-<file path="src/lib/email/ResendProvider.ts">
-import { Resend } from 'resend';
-import { EmailProvider, SendEmailPayload } from './EmailProvider';
-
-// Safely evaluate API key to prevent SDK initialization crash on Vercel
-const apiKey = process.env.RESEND_API_KEY;
-const resend = apiKey ? new Resend(apiKey) : null;
-
-export class ResendProvider implements EmailProvider {
-  async sendEmail(payload: SendEmailPayload) {
-    if (!resend) {
-      console.error("[Email Engine Error]: RESEND_API_KEY is not defined in environment variables.");
-      return { error: "RESEND_API_KEY is missing from server environment." };
-    }
-
-    try {
-      const data = await resend.emails.send({
-        from: payload.from,
-        to: payload.to,
-        subject: payload.subject,
-        text: payload.text,
-        html: payload.html || payload.text,
-        attachments: payload.attachments,
-      });
-
-      if (data.error) {
-        console.error("[Resend SDK Error]:", data.error);
-        return { error: data.error.message };
-      }
-      return { id: data.data?.id };
-    } catch (error: any) {
-      console.error("[Resend Server Crash Exception]:", error);
-      return { error: error.message };
-    }
-  }
-}
-</file>
-
 <file path="tailwind.config.ts">
 import type { Config } from "tailwindcss";
 
@@ -4820,140 +4730,117 @@ const config: Config = {
 export default config;
 </file>
 
-<file path="src/app/settings/integrations/page.tsx">
-"use client";
-import React, { useState, useEffect } from "react";
-import { AppLayout } from "@/components/layout/AppLayout";
-import { SectionTitle } from "@/components/ui/SectionTitle";
-import { Button } from "@/components/ui/Button";
-import { Calendar, Bot, CheckCircle2 } from "lucide-react";
-import { createClient } from "@/lib/supabase";
-import { useAppStore } from "@/store/useAppStore";
-import { toast, Toaster } from "sonner";
-import { logger } from "@/lib/logger";
+<file path="src/app/api/email/send/route.ts">
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { ResendProvider } from "@/lib/email/ResendProvider";
 
-export default function IntegrationsPage() {
-  const supabase = createClient();
-  const { activeOrgId, userId, userRole } = useAppStore();
-  
-  const [calendarConnected, setCalendarConnected] = useState(false);
-  const [autoFollowUp, setAutoFollowUp] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
-  useEffect(() => {
-    let isMounted = true;
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const { org_id, contact_id, sender_id, to, subject, content, htmlContent, attachments, from_slug } = body;
 
-    const fetchSettings = async () => {
-      if (!userId || !activeOrgId) {
-        if (isMounted) setIsLoading(false);
-        return;
-      }
+    console.log("[Email API] Received dispatch request:", { org_id, contact_id, to, from_slug, sender_id });
 
-      try {
-        const { data: user } = await supabase.from("users").select("calendar_connected").eq("id", userId).maybeSingle();
-        if (isMounted && user) setCalendarConnected(user.calendar_connected);
-
-        const { data: automations } = await supabase
-          .from("org_automations")
-          .select("is_active")
-          .eq("org_id", activeOrgId)
-          .eq("automation_key", "stale_proposal_followup")
-          .maybeSingle();
-        
-        if (isMounted && automations) setAutoFollowUp(automations.is_active);
-      } catch (err) {
-        logger.error('IntegrationsPage', 'Fatal fetch error', err);
-      } finally {
-        if (isMounted) setIsLoading(false);
-      }
-    };
-    
-    fetchSettings();
-    return () => { isMounted = false; };
-  }, [userId, activeOrgId, supabase]);
-
-  const toggleCalendar = async () => {
-    const newState = !calendarConnected;
-    setCalendarConnected(newState);
-    const { error } = await supabase.from("users").update({ calendar_connected: newState, calendar_provider: newState ? 'google' : null }).eq("id", userId);
-    if (error) {
-      toast.error("Failed to connect calendar");
-      setCalendarConnected(!newState);
-    } else toast.success(newState ? "Google Calendar Connected!" : "Calendar Disconnected.");
-  };
-
-  const toggleAutomation = async () => {
-    // FIX: Include 'admin' in permissions check
-    const isManager = ['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '');
-    if (!isManager) {
-      toast.error("Only managers can edit organization automations.");
-      return;
+    if (!org_id || !contact_id || (!content && !htmlContent)) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    const newState = !autoFollowUp;
-    setAutoFollowUp(newState);
+    // 1. Fetch organization email configurations (Dynamic keys & domains!)
+    const { data: org, error: orgError } = await supabase
+      .from("organizations")
+      .select("slug, resend_api_key, sending_domain")
+      .eq("id", org_id)
+      .single();
 
-    const { error } = await supabase.from("org_automations").upsert({
-      org_id: activeOrgId,
-      automation_key: "stale_proposal_followup",
-      is_active: newState
-    }, { onConflict: "org_id, automation_key" });
+    if (orgError || !org) {
+      console.error("[Email API] Failed to resolve organization configurations:", orgError);
+      return NextResponse.json({ error: "Failed to resolve workspace configurations." }, { status: 400 });
+    }
 
-    if (error) {
-      logger.error('IntegrationsPage', 'Automation toggle error', error);
-      toast.error("Failed to update automation.");
-      setAutoFollowUp(!newState); 
-    } else toast.success(newState ? "Automation Enabled" : "Automation Disabled");
-  };
+    // 2. Resolve Rep First Name to use as a personalized sender prefix
+    let senderPrefix = from_slug; // Fallback to org slug if profile is missing
+    
+    if (sender_id) {
+      const { data: profile } = await supabase
+        .from("users")
+        .select("full_name")
+        .eq("id", sender_id)
+        .maybeSingle();
 
-  return (
-    <AppLayout>
-      {isLoading ? (
-        <div className="h-full flex flex-1 items-center justify-center">
-           <div className="animate-spin w-6 h-6 border-2 border-berry border-t-transparent rounded-full" />
-        </div>
-      ) : (
-        <div className="p-4 md:p-8 max-w-5xl mx-auto flex-1 w-full">
-          <SectionTitle eyebrow="Settings" title="Integrations & Automations" />
+      if (profile && profile.full_name) {
+        // Extract first name, convert to lowercase, and strip non-alphanumeric characters
+        const firstName = profile.full_name.trim().split(/\s+/)[0];
+        senderPrefix = firstName.toLowerCase().replace(/[^a-z0-9]/g, "");
+      }
+    }
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-            <div className="rounded-xl p-6 border border-line bg-white shadow-card">
-              <div className="flex items-center gap-3 mb-2">
-                <div className="p-2 bg-paperDim rounded-lg"><Calendar size={20} className="text-ink" /></div>
-                <h2 className="text-lg font-medium text-ink font-body">Calendar Sync</h2>
-              </div>
-              <p className="text-sm text-slate font-body mb-6 h-10">Push your CRM tasks and "Next Actions" directly to your Google or Outlook calendar.</p>
-              <div className="flex items-center justify-between pt-4 border-t border-line">
-                <span className="text-sm font-medium font-body flex items-center gap-2">
-                  {calendarConnected ? <><CheckCircle2 size={16} className="text-sage" /> Connected</> : <span className="text-slate">Not Connected</span>}
-                </span>
-                <Button onClick={toggleCalendar} variant={calendarConnected ? "outline" : "primary"}>
-                  {calendarConnected ? "Disconnect" : "Connect Calendar"}
-                </Button>
-              </div>
-            </div>
+    // 3. Initialize Resend dynamically using the tenant's key (falls back to Vercel env if null)
+    const activeProvider = new ResendProvider(org.resend_api_key || undefined);
+    
+    // Resolve which domain to send from
+    const emailDomain = org.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "crm.pyrexxai.com";
+    
+    // Construct the personalized sender address: E.g., peter.pyrexxai@crm.pyrexxai.com
+    const fromAddress = `${senderPrefix}.${from_slug}@${emailDomain}`;
 
-            <div className="rounded-xl p-6 border border-line bg-white shadow-card">
-              <div className="flex items-center gap-3 mb-2">
-                <div className="p-2 bg-paperDim rounded-lg"><Bot size={20} className="text-berry" /></div>
-                <h2 className="text-lg font-medium text-ink font-body">Stale Proposal Sweeper</h2>
-              </div>
-              <p className="text-sm text-slate font-body mb-6 h-10">Automatically email leads who have been stuck in the "Proposal Sent" stage for more than 3 days.</p>
-              <div className="flex items-center justify-between pt-4 border-t border-line">
-                <span className="text-sm font-medium font-body">
-                  {autoFollowUp ? <span className="text-sage">Active (Runs Nightly)</span> : <span className="text-slate">Paused</span>}
-                </span>
-                <Button onClick={toggleAutomation} variant={autoFollowUp ? "outline" : "primary"} disabled={!['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '')}>
-                  {autoFollowUp ? "Disable" : "Enable"}
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      <Toaster position="top-right" richColors />
-    </AppLayout>
-  );
+    console.log("[Email API] Attempting send via dynamic provider...", { 
+      fromAddress, 
+      to, 
+      usingCustomKey: !!org.resend_api_key 
+    });
+
+    const emailResult = await activeProvider.sendEmail({
+      to,
+      from: fromAddress,
+      subject: subject || "Update from Pyrexx",
+      text: content,
+      html: htmlContent,
+      attachments: attachments || [],
+    });
+
+    if (emailResult.error) {
+      console.error("[Email API] Dynamic dispatch failed:", emailResult.error);
+      return NextResponse.json({ error: emailResult.error }, { status: 500 });
+    }
+
+    console.log("[Email API] Send success, updating database threads...");
+
+    let { data: thread } = await supabase
+      .from("threads")
+      .select("id")
+      .eq("org_id", org_id)
+      .eq("contact_id", contact_id)
+      .eq("channel", "email")
+      .single();
+
+    if (!thread) {
+      const { data: newThread } = await supabase
+        .from("threads")
+        .insert({ org_id, contact_id, channel: "email", subject })
+        .select("id")
+        .single();
+      thread = newThread;
+    }
+
+    await supabase.from("messages").insert({
+      thread_id: thread!.id,
+      sender_id,
+      direction: "outbound",
+      content: htmlContent || content,
+      attachments: attachments || []
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (err: any) {
+    console.error("[Email API Critical Crash]:", err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
 }
 </file>
 
@@ -4981,6 +4868,48 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       <CommandPalette />
     </div>
   );
+}
+</file>
+
+<file path="src/lib/email/ResendProvider.ts">
+import { Resend } from 'resend';
+import { EmailProvider, SendEmailPayload } from './EmailProvider';
+
+export class ResendProvider implements EmailProvider {
+  private resend: Resend | null = null;
+
+  constructor(customApiKey?: string) {
+    // Fall back to global environment key if no custom tenant key is provided
+    const apiKey = customApiKey || process.env.RESEND_API_KEY;
+    this.resend = apiKey ? new Resend(apiKey) : null;
+  }
+
+  async sendEmail(payload: SendEmailPayload) {
+    if (!this.resend) {
+      console.error("[Email Engine Error]: No valid Resend API key configured for this client.");
+      return { error: "Resend API key is missing or unconfigured." };
+    }
+
+    try {
+      const data = await this.resend.emails.send({
+        from: payload.from,
+        to: payload.to,
+        subject: payload.subject,
+        text: payload.text,
+        html: payload.html || payload.text,
+        attachments: payload.attachments,
+      });
+
+      if (data.error) {
+        console.error("[Resend SDK Error]:", data.error);
+        return { error: data.error.message };
+      }
+      return { id: data.data?.id };
+    } catch (error: any) {
+      console.error("[Resend Server Exception]:", error);
+      return { error: error.message };
+    }
+  }
 }
 </file>
 
@@ -5052,6 +4981,142 @@ export const useAppStore = create<AppState>()(
     }
   )
 );
+</file>
+
+<file path="src/app/settings/integrations/page.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { SectionTitle } from "@/components/ui/SectionTitle";
+import { Button } from "@/components/ui/Button";
+import { Calendar, Bot, CheckCircle2 } from "lucide-react";
+import { createClient } from "@/lib/supabase";
+import { useAppStore } from "@/store/useAppStore";
+import { toast, Toaster } from "sonner";
+import { logger } from "@/lib/logger";
+
+export default function IntegrationsPage() {
+  const supabase = createClient();
+  const { activeOrgId, userId, userRole } = useAppStore();
+  
+  const [calendarConnected, setCalendarConnected] = useState(false);
+  const [autoFollowUp, setAutoFollowUp] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchSettings = async () => {
+      if (!userId || !activeOrgId) {
+        if (isMounted) setIsLoading(false);
+        return;
+      }
+
+      try {
+        const { data: user } = await supabase.from("users").select("calendar_connected").eq("id", userId).maybeSingle();
+        if (isMounted && user) setCalendarConnected(user.calendar_connected);
+
+        const { data: automations } = await supabase
+          .from("org_automations")
+          .select("is_active")
+          .eq("org_id", activeOrgId)
+          .eq("automation_key", "stale_proposal_followup")
+          .maybeSingle();
+        
+        if (isMounted && automations) setAutoFollowUp(automations.is_active);
+      } catch (err) {
+        logger.error('IntegrationsPage', 'Fatal fetch error', err);
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
+    };
+    
+    fetchSettings();
+    return () => { isMounted = false; };
+  }, [userId, activeOrgId, supabase]);
+
+  const toggleCalendar = async () => {
+    const newState = !calendarConnected;
+    setCalendarConnected(newState);
+    const { error } = await supabase.from("users").update({ calendar_connected: newState, calendar_provider: newState ? 'google' : null }).eq("id", userId);
+    if (error) {
+      toast.error("Failed to connect calendar");
+      setCalendarConnected(!newState);
+    } else toast.success(newState ? "Google Calendar Connected!" : "Calendar Disconnected.");
+  };
+
+  const toggleAutomation = async () => {
+    const isManager = ['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '');
+    if (!isManager) {
+      toast.error("Only managers can edit organization automations.");
+      return;
+    }
+
+    const newState = !autoFollowUp;
+    setAutoFollowUp(newState);
+
+    const { error } = await supabase.from("org_automations").upsert({
+      org_id: activeOrgId,
+      automation_key: "stale_proposal_followup",
+      is_active: newState
+    }, { onConflict: "org_id, automation_key" });
+
+    if (error) {
+      logger.error('IntegrationsPage', 'Automation toggle error', error);
+      toast.error("Failed to update automation.");
+      setAutoFollowUp(!newState); 
+    } else toast.success(newState ? "Automation Enabled" : "Automation Disabled");
+  };
+
+  return (
+    <AppLayout>
+      {isLoading ? (
+        <div className="h-full flex flex-1 items-center justify-center">
+           <div className="animate-spin w-6 h-6 border-2 border-berry border-t-transparent rounded-full" />
+        </div>
+      ) : (
+        <div className="p-4 md:p-8 max-w-5xl mx-auto flex-1 w-full">
+          <SectionTitle eyebrow="Settings" title="Integrations & Automations" />
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+            <div className="rounded-xl p-6 border border-line bg-white shadow-card">
+              <div className="flex items-center gap-3 mb-2">
+                <div className="p-2 bg-paperDim rounded-lg"><Calendar size={20} className="text-ink" /></div>
+                <h2 className="text-lg font-medium text-ink font-body">Calendar Sync</h2>
+              </div>
+              <p className="text-sm text-slate font-body mb-6 h-10">Push your CRM tasks and "Next Actions" directly to your Google or Outlook calendar.</p>
+              <div className="flex items-center justify-between pt-4 border-t border-line">
+                <span className="text-sm font-medium font-body flex items-center gap-2">
+                  {calendarConnected ? <><CheckCircle2 size={16} className="text-sage" /> Connected</> : <span className="text-slate">Not Connected</span>}
+                </span>
+                <Button onClick={toggleCalendar} variant={calendarConnected ? "outline" : "primary"}>
+                  {calendarConnected ? "Disconnect" : "Connect Calendar"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="rounded-xl p-6 border border-line bg-white shadow-card">
+              <div className="flex items-center gap-3 mb-2">
+                <div className="p-2 bg-paperDim rounded-lg"><Bot size={20} className="text-berry" /></div>
+                <h2 className="text-lg font-medium text-ink font-body">Stale Proposal Sweeper</h2>
+              </div>
+              <p className="text-sm text-slate font-body mb-6 h-10">Automatically email leads who have been stuck in the "Proposal Sent" stage for more than 3 days.</p>
+              <div className="flex items-center justify-between pt-4 border-t border-line">
+                <span className="text-sm font-medium font-body">
+                  {autoFollowUp ? <span className="text-sage">Active (Runs Nightly)</span> : <span className="text-slate">Paused</span>}
+                </span>
+                <Button onClick={toggleAutomation} variant={autoFollowUp ? "outline" : "primary"} disabled={!['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '')}>
+                  {autoFollowUp ? "Disable" : "Enable"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      <Toaster position="top-right" richColors />
+    </AppLayout>
+  );
+}
 </file>
 
 <file path="src/app/settings/team/page.tsx">
@@ -5580,7 +5645,6 @@ export function Sidebar() {
     if (targetWorkspace) {
       setActiveOrgId(targetWorkspace.id);
       setWorkspace(targetWorkspace.type);
-      // FIX: Use soft navigation so Zustand has ample time to flush its writes to localStorage
       router.push("/");
     }
   };
@@ -5692,6 +5756,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const supabase = createClient();
   const router = useRouter();
   
+  // Extract all state and setters from our persisted global store
   const { 
     activeOrgId, setActiveOrgId, 
     currentWorkspace, setWorkspace, 
@@ -5714,11 +5779,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         
         if (!user) {
+          logger.info('AuthProvider', 'No active user found. Redirecting to login.');
           if (isMounted) setIsBootstrapping(false);
           return;
         }
 
-        // Fetch User Profile
+        // Fetch User Profile from public.users with fallback support
         const { data: profile, error: profileError } = await supabase.from('users').select('full_name, email').eq('id', user.id).maybeSingle();
         if (profileError) {
           logger.error('AuthProvider', 'Failed to fetch user profile', profileError);
@@ -5728,7 +5794,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUserName(profile?.full_name || fallbackName);
         setUserEmail(profile?.email || user.email || "");
 
-        // Fetch Memberships
+        // Fetch organization memberships
         const { data: memberships, error: membershipError } = await supabase
           .from('memberships')
           .select('role, org_id, organizations(id, name, type)')
@@ -5740,6 +5806,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (memberships && memberships.length > 0) {
           const availableWorkspaces: Workspace[] = [];
+          let targetOrgId = activeOrgId; 
           let agencyMembership: any = null;
 
           memberships.forEach((m: any) => {
@@ -5756,38 +5823,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
           setWorkspaces(availableWorkspaces);
 
-          // FIX: Read localStorage directly & synchronously. 
-          // This stops Next.js from triggering the fallback loop before Zustand has hydrated.
-          let savedOrgId = activeOrgId;
-          let savedWorkspace = currentWorkspace;
-
+          // Read localStorage synchronously to prevent Zustand hydration mismatch loops on Next.js boot
           try {
             const persistedData = localStorage.getItem('pyrexx-crm-storage');
             if (persistedData) {
               const parsed = JSON.parse(persistedData);
               if (parsed?.state?.activeOrgId) {
-                savedOrgId = parsed.state.activeOrgId;
-                savedWorkspace = parsed.state.currentWorkspace;
+                targetOrgId = parsed.state.activeOrgId;
               }
             }
           } catch (storageError) {
             logger.error('AuthProvider', 'Failed to parse localStorage', storageError);
           }
 
-          // Validate if the saved Org ID actually belongs to the user
-          const isSavedOrgValid = availableWorkspaces.find(w => w.id === savedOrgId);
+          const isSavedOrgValid = availableWorkspaces.find(w => w.id === targetOrgId);
 
-          if (isSavedOrgValid && savedOrgId) {
-            setActiveOrgId(savedOrgId);
-            setWorkspace(savedWorkspace);
-            
-            const currentMembership = memberships.find((m: any) => m.org_id === savedOrgId);
+          if (isSavedOrgValid && targetOrgId) {
+            setActiveOrgId(targetOrgId);
+            const currentMembership = memberships.find((m: any) => m.org_id === targetOrgId);
             setUser(user.id, currentMembership?.role || 'rep');
-            logger.info('AuthProvider', 'Restored validated workspace from storage', { savedOrgId, savedWorkspace });
+            logger.info('AuthProvider', 'Restored validated workspace from storage', { targetOrgId });
           } else {
             // Safe fallback if nothing is saved or the saved workspace is invalid
             const fallbackOrg = agencyMembership || memberships[0];
-            const fallbackType = fallbackOrg.organizations?.type || 'clinic';
+            
+            // FIX: Safely unwrap fallbackOrg's organizations to satisfy strict TS compilers
+            const resolvedOrg = Array.isArray(fallbackOrg.organizations) 
+              ? fallbackOrg.organizations[0] 
+              : fallbackOrg.organizations;
+              
+            const fallbackType = resolvedOrg?.type || 'clinic';
             
             setActiveOrgId(fallbackOrg.org_id);
             setWorkspace(fallbackType as 'agency' | 'clinic');
