@@ -47,6 +47,7 @@ package.json
 postcss.config.js
 README.md
 src/app/accounts/page.tsx
+src/app/api/auth/reset-password/route.ts
 src/app/api/calender/sync/route.ts
 src/app/api/cron/automations/route.ts
 src/app/api/email/inbound/route.ts
@@ -111,6 +112,103 @@ vercel.json
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="src/app/api/auth/reset-password/route.ts">
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { ResendProvider } from "@/lib/email/ResendProvider";
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export async function POST(req: Request) {
+  try {
+    const { email } = await req.json();
+
+    if (!email) {
+      return NextResponse.json({ error: "Missing email address" }, { status: 400 });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const origin = req.headers.get("origin") || "https://crm.pyrexxai.com";
+    const redirectUrl = `${origin}/auth/update-password`;
+
+    console.log("[Reset Password API] Generating recovery link for:", { cleanEmail, redirectUrl });
+
+    // 1. Generate the secure recovery link via Admin API [21]
+    const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+      type: 'recovery',
+      email: cleanEmail,
+      options: { redirectTo: redirectUrl }
+    });
+
+    if (linkError) {
+      console.error("[Reset Password API] Failed to generate recovery link:", linkError);
+      return NextResponse.json({ error: "Failed to generate security link: " + linkError.message }, { status: 500 });
+    }
+
+    const actionLink = linkData?.properties?.action_link;
+
+    if (!actionLink) {
+      return NextResponse.json({ error: "Failed to resolve secure action link." }, { status: 500 });
+    }
+
+    // 2. Fetch the root Pyrexx AI organization details to configure SMTP/Resend
+    const { data: org } = await supabaseAdmin
+      .from("organizations")
+      .select("name, slug, resend_api_key, sending_domain")
+      .eq("slug", "pyrexxai")
+      .single();
+
+    const activeProvider = new ResendProvider(org?.resend_api_key || undefined);
+    const emailDomain = org?.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "crm.pyrexxai.com";
+    const fromAddress = `security@${emailDomain}`;
+
+    const resetHtml = `
+      <div style="font-family: sans-serif; padding: 24px; max-width: 480px; border: 1px solid #E3E1DA; border-radius: 12px; background-color: #FFFFFF; box-shadow: 0px 4px 12px rgba(19, 20, 27, 0.03);">
+        <h2 style="color: #13141B; font-weight: 600; font-size: 20px; margin-top: 0;">Reset Your Password</h2>
+        <p style="color: #3A3D49; font-size: 14px; line-height: 1.5;">
+          We received a request to reset the password for your Pyrexx CRM account.
+        </p>
+        <p style="color: #3A3D49; font-size: 14px; line-height: 1.5; margin-bottom: 24px;">
+          Click the secure button below to establish a new password. This link is single-use and will expire shortly.
+        </p>
+        <div style="text-align: center;">
+          <a href="${actionLink}" style="background-color: #13141B; color: #F5F5F2; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 500; display: inline-block;">
+            Reset Password
+          </a>
+        </div>
+        <p style="color: #6B6E77; font-size: 11px; margin-top: 28px; line-height: 1.4; border-top: 1px solid #E3E1DA; padding-top: 16px; font-style: italic;">
+          If you did not request this change, you can safely ignore this email. Your credentials will remain secure.
+        </p>
+      </div>
+    `;
+
+    console.log("[Reset Password API] Sending custom email via Resend...", { fromAddress, to: cleanEmail });
+
+    const emailResult = await activeProvider.sendEmail({
+      to: cleanEmail,
+      from: fromAddress,
+      subject: "Reset your Pyrexx CRM password",
+      text: `Please reset your password using this link: ${actionLink}`,
+      html: resetHtml
+    });
+
+    if (emailResult.error) {
+      console.error("[Reset Password API] Email send failed:", emailResult.error);
+      return NextResponse.json({ error: `Security link generated, but Resend failed to dispatch email: ${emailResult.error}` }, { status: 500 });
+    }
+
+    console.log("[Reset Password API] Security email dispatched successfully.");
+    return NextResponse.json({ success: true });
+  } catch (err: any) {
+    console.error("[Reset Password API Exception]:", err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+</file>
 
 <file path=".env.example">
 # ==========================================
@@ -413,159 +511,6 @@ export async function GET(req: Request) {
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
-}
-</file>
-
-<file path="src/app/auth/login/page.tsx">
-"use client";
-import React, { useState } from "react";
-import { PulseTrace } from "@/components/ui/PulseTrace";
-import { Input } from "@/components/ui/Input";
-import { Button } from "@/components/ui/Button";
-import { createClient } from "@/lib/supabase";
-import { useRouter } from "next/navigation";
-import { toast, Toaster } from "sonner";
-
-export default function LoginPage() {
-  const supabase = createClient();
-  const router = useRouter();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (error) {
-      toast.error("Login failed", { description: error.message });
-      setIsLoading(false);
-    } else {
-      router.push("/");
-    }
-  };
-
-  return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-paperDim p-4">
-      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-line p-8">
-        <div className="flex flex-col items-center mb-8">
-          <PulseTrace sentiment="positive" size="lg" />
-          <h1 className="font-display text-3xl text-ink mt-4">PyrexxAI</h1>
-          <p className="text-sm text-slate font-body mt-1">Internal Operations System</p>
-        </div>
-
-        <form onSubmit={handleLogin} className="space-y-4">
-          <Input 
-            label="Email Address" 
-            type="email" 
-            placeholder="name@pyrexxai.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-          <Input 
-            label="Password" 
-            type="password" 
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-          <Button type="submit" className="w-full mt-2" disabled={isLoading}>
-            {isLoading ? "Authenticating..." : "Sign In"}
-          </Button>
-        </form>
-      </div>
-      <Toaster position="top-center" richColors />
-    </div>
-  );
-}
-</file>
-
-<file path="src/app/auth/update-password/page.tsx">
-"use client";
-import React, { useState, useEffect } from "react";
-import { PulseTrace } from "@/components/ui/PulseTrace";
-import { Input } from "@/components/ui/Input";
-import { Button } from "@/components/ui/Button";
-import { createClient } from "@/lib/supabase";
-import { useRouter } from "next/navigation";
-import { toast, Toaster } from "sonner";
-
-export default function UpdatePasswordPage() {
-  const supabase = createClient();
-  const router = useRouter();
-  const [password, setPassword] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [isVerifying, setIsVerifying] = useState(true);
-
-  // When a user clicks an invite link, Supabase sets the session via URL hash. 
-  // We wait to ensure they are actually authenticated before letting them set a password.
-  useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user) {
-        toast.error("Invalid or expired invite link. Redirecting...");
-        setTimeout(() => router.push('/auth/login'), 2000);
-      } else {
-        setIsVerifying(false);
-      }
-    });
-  }, [router, supabase]);
-
-  const handleUpdate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (password.length < 6) {
-      toast.error("Password must be at least 6 characters.");
-      return;
-    }
-
-    setIsLoading(true);
-    const { error } = await supabase.auth.updateUser({ password });
-
-    if (error) {
-      toast.error("Failed to update password", { description: error.message });
-      setIsLoading(false);
-    } else {
-      toast.success("Password secured! Welcome to Pyrexx.");
-      setTimeout(() => router.push("/"), 1500);
-    }
-  };
-
-  if (isVerifying) {
-    return <div className="min-h-screen flex items-center justify-center bg-paperDim"><PulseTrace sentiment="neutral" size="lg" /></div>;
-  }
-
-  return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-paperDim p-4">
-      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-line p-8">
-        <div className="flex flex-col items-center mb-8">
-          <PulseTrace sentiment="positive" size="lg" />
-          <h1 className="font-display text-2xl text-ink mt-4 text-center">Secure Your Account</h1>
-          <p className="text-sm text-slate font-body mt-1 text-center">Please set a permanent password for your Pyrexx CRM account.</p>
-        </div>
-
-        <form onSubmit={handleUpdate} className="space-y-4">
-          <Input 
-            label="New Password" 
-            type="password" 
-            placeholder="At least 6 characters"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            autoFocus
-          />
-          <Button type="submit" className="w-full mt-2" disabled={isLoading}>
-            {isLoading ? "Securing..." : "Save Password & Enter"}
-          </Button>
-        </form>
-      </div>
-      <Toaster position="top-center" richColors />
-    </div>
-  );
 }
 </file>
 
@@ -1823,6 +1768,324 @@ export function cn(...inputs: ClassValue[]) {
 }
 </file>
 
+<file path="src/app/auth/login/page.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { PulseTrace } from "@/components/ui/PulseTrace";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { createClient } from "@/lib/supabase";
+import { useRouter } from "next/navigation";
+import { toast, Toaster } from "sonner";
+
+const TELEMETRY_FEED = [
+  { time: "09:23:44", status: "positive", msg: "Inbound call: Bloom Aesthetics" },
+  { time: "09:23:45", status: "neutral", msg: "Greeting dispatched: 'Hi, thank you for calling...'" },
+  { time: "09:24:02", status: "positive", msg: "Intent identified: Booking Inquiry" },
+  { time: "09:24:15", status: "neutral", msg: "Slot verified: Thursday, 2:00 PM" },
+  { time: "09:24:22", status: "positive", msg: "Booking confirmed: Sarah Okafor (Botox Consult)" },
+  { time: "09:24:25", status: "neutral", msg: "SMS dispatch triggered successfully" },
+  { time: "09:25:01", status: "neutral", msg: "Inbound call: Calm Mind Therapy" },
+  { time: "09:25:12", status: "negative", msg: "Call Dropped (38s) - dropped call trigger active" },
+];
+
+export default function LoginPage() {
+  const supabase = createClient();
+  const router = useRouter();
+  
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [isForgotPassword, setIsForgotPassword] = useState(false);
+  const [visibleLogs, setVisibleLogs] = useState<any[]>([]);
+
+  useEffect(() => {
+    setVisibleLogs([TELEMETRY_FEED[0], TELEMETRY_FEED[1], TELEMETRY_FEED[2]]);
+    
+    let index = 3;
+    const interval = setInterval(() => {
+      setVisibleLogs(prev => {
+        const next = [...prev, TELEMETRY_FEED[index]];
+        if (next.length > 5) next.shift(); 
+        return next;
+      });
+      index = (index + 1) % TELEMETRY_FEED.length;
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) {
+      toast.error("Login failed", { description: error.message });
+      setIsLoading(false);
+    } else {
+      router.push("/");
+    }
+  };
+
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email) {
+      toast.error("Please enter your email address.");
+      return;
+    }
+
+    setIsLoading(true);
+
+    // UPGRADE: Hit our new, custom server-side endpoint instead of Supabase client reset
+    const res = await fetch("/api/auth/reset-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
+    });
+
+    const data = await res.json();
+    setIsLoading(false);
+
+    if (res.ok) {
+      toast.success("Security reset link dispatched!", {
+        description: "Please check your inbox for instructions to set your password."
+      });
+      setIsForgotPassword(false);
+      setPassword("");
+    } else {
+      toast.error("Failed to send reset link", { description: data.error || "Unknown server error" });
+    }
+  };
+
+  return (
+    <div className="min-h-screen w-full flex bg-paper">
+      
+      <div className="flex-1 md:max-w-md lg:max-w-[480px] xl:max-w-[540px] flex flex-col justify-center px-8 sm:px-12 md:px-16 bg-white border-r border-line relative h-full min-h-screen">
+        <div className="w-full max-w-sm mx-auto">
+          <div className="flex flex-col mb-8">
+            <div className="md:hidden flex items-center gap-2 mb-4">
+              <PulseTrace sentiment="positive" size="sm" />
+              <span className="font-body font-bold text-ink text-[15px]">Pyrexx CRM</span>
+            </div>
+            <h1 className="font-display text-4xl text-ink leading-none">
+              {isForgotPassword ? "Reset Password" : "Welcome Back"}
+            </h1>
+            <p className="text-sm text-slate font-body mt-2">
+              {isForgotPassword 
+                ? "Enter your email to request a secure password update link." 
+                : "Enter your credentials to access your Pyrexx CRM operations."}
+            </p>
+          </div>
+
+          {isForgotPassword ? (
+            <form onSubmit={handleForgotPassword} className="space-y-4">
+              <Input 
+                label="Reset Email Address" 
+                type="email" 
+                placeholder="name@pyrexxai.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoFocus
+              />
+              <Button type="submit" className="w-full mt-2" disabled={isLoading}>
+                {isLoading ? "Dispatching..." : "Send Reset Link"}
+              </Button>
+              <div className="text-center pt-2">
+                <button 
+                  type="button" 
+                  onClick={() => setIsForgotPassword(false)} 
+                  className="text-xs text-slate hover:text-berry font-body transition-colors"
+                >
+                  Back to Sign In
+                </button>
+              </div>
+            </form>
+          ) : (
+            <form onSubmit={handleLogin} className="space-y-4">
+              <Input 
+                label="Email Address" 
+                type="email" 
+                placeholder="peter@pyrexxai.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+              <div className="relative w-full">
+                <Input 
+                  label="Password" 
+                  type="password" 
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+                <button 
+                  type="button"
+                  onClick={() => setIsForgotPassword(true)}
+                  className="absolute right-0 top-0 text-[10px] text-slate hover:text-berry transition-colors font-body"
+                >
+                  Forgot?
+                </button>
+              </div>
+              <Button type="submit" className="w-full mt-2" disabled={isLoading}>
+                {isLoading ? "Authenticating..." : "Sign In"}
+              </Button>
+            </form>
+          )}
+        </div>
+      </div>
+
+      <div className="hidden md:flex flex-1 flex-col justify-between p-12 lg:p-16 bg-ink relative overflow-hidden">
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 rounded-full bg-berry/10 filter blur-[80px] pointer-events-none" />
+        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 rounded-full bg-sage/5 filter blur-[100px] pointer-events-none" />
+
+        <div className="flex items-center justify-between z-10">
+          <div className="flex items-center gap-2">
+            <PulseTrace sentiment="positive" size="sm" />
+            <span className="font-body font-bold text-paper text-[15px]">Pyrexx CRM</span>
+          </div>
+          <span className="text-[10px] px-2 py-0.5 rounded bg-inkSoft text-slate font-mono border border-inkSoft">
+            Live Gateway: app.pyrexxai.com
+          </span>
+        </div>
+
+        <div className="max-w-xl my-auto z-10">
+          <h2 className="font-display text-[56px] text-paper leading-[1.05] tracking-tight">
+            The intelligent proxy connecting <span className="italic text-berry">voice agents</span> to medical records.
+          </h2>
+          <p className="text-sm text-slate font-body mt-4 leading-relaxed max-w-md">
+            Pyrexx AI securely captures, transcribes, and enriches every patient call, pushing structured data straight into clinic workflows.
+          </p>
+        </div>
+
+        <div className="rounded-xl bg-inkSoft border border-inkSoft/80 p-5 shadow-2xl max-w-xl w-full z-10 backdrop-blur-md">
+          <div className="flex items-center justify-between mb-4">
+            <span className="text-[10px] uppercase tracking-wide text-slate font-body font-semibold">Live Inbound Ingestion Loop</span>
+            <div className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-sage animate-ping" />
+              <span className="text-[10px] text-sage font-mono">STREAMING</span>
+            </div>
+          </div>
+          
+          <div className="space-y-2 font-mono text-xs">
+            {visibleLogs.map((log, idx) => (
+              <div key={idx} className="flex items-start gap-3 transition-opacity duration-500 animate-fadeIn">
+                <span className="text-slate text-[10px] w-14 flex-shrink-0">{log.time}</span>
+                <span className="text-paper flex-1 leading-normal">{log.msg}</span>
+                <PulseTrace sentiment={log.status} />
+              </div>
+            ))}
+          </div>
+        </div>
+
+      </div>
+
+      <Toaster position="top-right" richColors />
+    </div>
+  );
+}
+</file>
+
+<file path="src/app/auth/update-password/page.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { PulseTrace } from "@/components/ui/PulseTrace";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { createClient } from "@/lib/supabase";
+import { useRouter } from "next/navigation";
+import { useAppStore } from "@/store/useAppStore";
+import { toast, Toaster } from "sonner";
+
+export default function UpdatePasswordPage() {
+  const supabase = createClient();
+  const router = useRouter();
+  const { activeOrgId } = useAppStore();
+  
+  const [password, setPassword] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(true);
+  const [tempUserId, setTempUserId] = useState<string | null>(null);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) {
+        toast.error("Invalid or expired invite link. Redirecting...");
+        setTimeout(() => router.push('/auth/login'), 2000);
+      } else {
+        setTempUserId(user.id);
+        setIsVerifying(false);
+      }
+    });
+  }, [router, supabase]);
+
+  const handleUpdate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password.length < 6) {
+      toast.error("Password must be at least 6 characters.");
+      return;
+    }
+
+    setIsLoading(true);
+    const { error } = await supabase.auth.updateUser({ password });
+
+    if (error) {
+      toast.error("Failed to update password", { description: error.message });
+      setIsLoading(false);
+    } else {
+      // UPGRADE: Update the representative's membership status to ACTIVE
+      if (tempUserId && activeOrgId) {
+        await supabase
+          .from("memberships")
+          .update({ status: 'active' })
+          .eq("user_id", tempUserId)
+          .eq("org_id", activeOrgId);
+      }
+
+      toast.success("Password secured! Welcome to Pyrexx.");
+      setTimeout(() => router.push("/"), 1500);
+    }
+  };
+
+  if (isVerifying) {
+    return <div className="min-h-screen flex items-center justify-center bg-paperDim"><PulseTrace sentiment="neutral" size="lg" /></div>;
+  }
+
+  return (
+    <div className="min-h-screen w-full flex items-center justify-center bg-paperDim p-4">
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-line p-8">
+        <div className="flex flex-col items-center mb-8">
+          <PulseTrace sentiment="positive" size="lg" />
+          <h1 className="font-display text-2xl text-ink mt-4 text-center">Secure Your Account</h1>
+          <p className="text-sm text-slate font-body mt-1 text-center">Please set a permanent password for your Pyrexx CRM account.</p>
+        </div>
+
+        <form onSubmit={handleUpdate} className="space-y-4">
+          <Input 
+            label="New Password" 
+            type="password" 
+            placeholder="At least 6 characters"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            autoFocus
+          />
+          <Button type="submit" className="w-full mt-2" disabled={isLoading}>
+            {isLoading ? "Securing..." : "Save Password & Enter"}
+          </Button>
+        </form>
+      </div>
+      <Toaster position="top-center" richColors />
+    </div>
+  );
+}
+</file>
+
 <file path="src/app/calls/page.tsx">
 "use client";
 import React, { useState } from "react";
@@ -1988,200 +2251,6 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         </AuthProvider>
       </body>
     </html>
-  );
-}
-</file>
-
-<file path="src/app/page.tsx">
-"use client";
-import React, { useEffect, useState } from "react";
-import { AppLayout } from "@/components/layout/AppLayout";
-import { useAppStore } from "@/store/useAppStore";
-import { SectionTitle } from "@/components/ui/SectionTitle";
-import { StatCard } from "@/components/ui/StatCard";
-import { TrendingUp, Columns, CheckSquare, Phone, Calendar, TrendingDown, Users } from "lucide-react";
-import { createClient } from "@/lib/supabase";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import { Avatar } from "@/components/ui/Avatar";
-
-export default function DashboardPage() {
-  const { currentWorkspace, activeOrgId } = useAppStore();
-  const supabase = createClient();
-  
-  const [metrics, setMetrics] = useState<any>({ 
-    openValue: 0, 
-    activeDeals: 0, 
-    winRate: "0%", 
-    chartData: [], 
-    activities: [],
-    leaderboard: [] 
-  });
-
-  useEffect(() => {
-    if (activeOrgId && currentWorkspace === "agency") {
-      fetchAgencyData();
-    }
-  }, [activeOrgId, currentWorkspace]);
-
-  const fetchAgencyData = async () => {
-    // 1. Fetch Deals for Funnel & Value
-    const { data: deals } = await supabase.from("deals").select("*").eq("org_id", activeOrgId);
-    
-    // 2. Fetch Recent Activities (Audit Log) for the feed and Leaderboard
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const { data: activities } = await supabase
-      .from("activities")
-      .select("*, users(full_name)")
-      .eq("org_id", activeOrgId)
-      .order("created_at", { ascending: false });
-
-    if (deals && activities) {
-      const activeDeals = deals.filter(d => d.stage !== "Active Client");
-      const wonDeals = deals.filter(d => d.stage === "Active Client");
-      const openValue = activeDeals.reduce((sum, d) => sum + Number(d.value), 0);
-      
-      const winRate = deals.length > 0 ? Math.round((wonDeals.length / deals.length) * 100) : 0;
-
-      const STAGES = ["New Lead", "Demo Scheduled", "Proposal Sent", "Contract Sent", "Onboarding", "Active Client"];
-      const chartData = STAGES.map(stage => ({
-        stage: stage.replace(" ", "\n"),
-        count: deals.filter(d => d.stage === stage).length
-      }));
-
-      // 3. Compute Leaderboard (Activities today grouped by Rep)
-      const todaysActivities = activities.filter(a => new Date(a.created_at) >= today);
-      const repStats: Record<string, number> = {};
-      
-      todaysActivities.forEach(a => {
-        const name = a.users?.full_name || "Unknown Rep";
-        repStats[name] = (repStats[name] || 0) + 1;
-      });
-
-      const leaderboard = Object.entries(repStats)
-        .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => b.count - a.count);
-
-      setMetrics({ 
-        openValue, 
-        activeDeals: activeDeals.length, 
-        winRate: `${winRate}%`,
-        chartData, 
-        activities: activities.slice(0, 10), // Keep last 10 for the feed
-        leaderboard 
-      });
-    }
-  };
-
-  return (
-    <AppLayout>
-      <div className="p-4 md:p-8 max-w-7xl mx-auto">
-        <SectionTitle 
-          eyebrow={currentWorkspace === "agency" ? "Agency Workspace" : "Bloom MedSpa"} 
-          title={currentWorkspace === "agency" ? "Pipeline Overview" : "Front Desk Overview"} 
-        />
-
-        {currentWorkspace === "agency" ? (
-          <>
-            {/* Live Metrics (Fake deltas removed) */}
-            <div className="flex gap-3 md:gap-4 mb-8 flex-wrap">
-              <StatCard label="Open pipeline value" value={`$${metrics.openValue.toLocaleString()}`} icon={TrendingUp} />
-              <StatCard label="Active deals" value={metrics.activeDeals} icon={Columns} />
-              <StatCard label="Activities Today" value={metrics.leaderboard.reduce((s: number, l: any) => s + l.count, 0)} icon={CheckSquare} />
-              <StatCard label="Historical Win Rate" value={metrics.winRate} icon={TrendingUp} />
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-6 gap-6">
-              
-              {/* Funnel Chart */}
-              <div className="md:col-span-4 rounded-xl p-6 bg-white border border-line shadow-card flex flex-col">
-                <div className="text-sm font-medium mb-6 text-ink font-body">Pipeline by stage</div>
-                <div className="h-[240px] w-full flex-1">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={metrics.chartData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#E3E1DA" vertical={false} />
-                      <XAxis dataKey="stage" tick={{ fontSize: 11, fontFamily: "var(--font-body)", fill: "#6B6E77" }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fontSize: 11, fontFamily: "var(--font-mono)", fill: "#6B6E77" }} axisLine={false} tickLine={false} allowDecimals={false} />
-                      <Tooltip cursor={{ fill: "#F5F5F2" }} contentStyle={{ fontFamily: "var(--font-body)", fontSize: 12, borderRadius: 8, border: "1px solid #E3E1DA", boxShadow: "0px 2px 4px rgba(19, 20, 27, 0.04)" }} />
-                      <Bar dataKey="count" fill="#AF3358" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              {/* Leaderboard & Feed Column */}
-              <div className="md:col-span-2 flex flex-col gap-6">
-                
-                {/* Rep Leaderboard */}
-                <div className="rounded-xl p-5 bg-ink border border-inkSoft shadow-card">
-                  <div className="flex items-center gap-2 mb-4 text-paper">
-                    <Users size={16} />
-                    <span className="text-sm font-medium font-body">Rep Leaderboard (Today)</span>
-                  </div>
-                  <div className="space-y-3">
-                    {metrics.leaderboard.length === 0 ? (
-                      <div className="text-xs text-slate font-body">No activity logged today.</div>
-                    ) : (
-                      metrics.leaderboard.map((rep: any, idx: number) => (
-                        <div key={idx} className="flex items-center justify-between">
-                          <div className="flex items-center gap-2 text-paper text-sm font-body">
-                            <span className="text-slate text-xs font-mono w-3">{idx + 1}.</span>
-                            <Avatar name={rep.name} size={20} className="bg-ink600" />
-                            {rep.name}
-                          </div>
-                          <span className="text-sage font-mono text-sm">{rep.count}</span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-
-                {/* System Audit Feed */}
-                <div className="rounded-xl p-5 bg-white border border-line shadow-card flex-1 overflow-hidden flex flex-col">
-                  <div className="text-sm font-medium mb-4 text-ink font-body">Recent System Logs</div>
-                  <div className="space-y-4 flex-1 overflow-y-auto pr-2">
-                    {metrics.activities.length === 0 ? (
-                      <div className="text-xs text-slate font-body text-center mt-4">No recent logs</div>
-                    ) : (
-                      metrics.activities.map((act: any) => (
-                        <div key={act.id} className="flex items-start gap-3">
-                          <Avatar name={act.users?.full_name || "System"} size={26} />
-                          <div>
-                            <div className="text-sm text-ink font-body leading-tight">
-                              <span className="font-medium">{act.users?.full_name || "System"}</span> {act.content.toLowerCase()}
-                            </div>
-                            <div className="text-[10px] text-slate font-mono mt-0.5 text-opacity-70">
-                              {new Date(act.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-                            </div>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="flex gap-3 md:gap-4 mb-8 flex-wrap">
-              <StatCard label="Calls today" value="17" icon={Phone} />
-              <StatCard label="Booked appointments" value="11" icon={Calendar} />
-              <StatCard label="No-show rate" value="4.2%" icon={TrendingDown} />
-              <StatCard label="Revenue this month" value="$28,400" icon={TrendingUp} />
-            </div>
-
-            <div className="rounded-xl p-6 bg-white border border-line shadow-card">
-              <div className="text-sm font-medium mb-4 text-ink font-body">Live Call Intelligence Feed</div>
-              <div className="text-xs text-slate font-body p-4 bg-paperDim rounded border border-line text-center">
-                Retell AI Voice proxy routing will populate this feed. (Data layer pending Retell integration)
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-    </AppLayout>
   );
 }
 </file>
@@ -3643,69 +3712,6 @@ export async function POST(req: Request) {
 }
 </file>
 
-<file path="src/app/api/team/invite/route.ts">
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-export async function POST(req: Request) {
-  try {
-    const { email, role, org_id } = await req.json();
-
-    if (!email || !role || !org_id) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
-    }
-
-    // UPGRADE: Dynamically extract the origin header from the request
-    // This supports seamless local development (localhost) and production (crm.pyrexxai.com) redirections
-    const origin = req.headers.get("origin") || "https://crm.pyrexxai.com";
-    const redirectUrl = `${origin}/auth/update-password`;
-
-    console.log("[Team Invite API] Initiating invite with explicit redirect:", { 
-      email, 
-      redirectUrl 
-    });
-
-    // Pass the explicit redirect destination to the Supabase Auth invitation SDK
-    const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
-      redirectTo: redirectUrl // <-- Tells Supabase exactly which whitelisted URL to redirect to
-    });
-
-    if (inviteError) {
-      return NextResponse.json({ error: inviteError.message }, { status: 400 });
-    }
-
-    const userId = inviteData?.user?.id;
-    
-    if (!userId) {
-      return NextResponse.json({ error: "Failed to resolve user ID from invite response." }, { status: 500 });
-    }
-
-    // 2. Ensure they exist in public.users
-    await supabaseAdmin.from('users').upsert({ id: userId, email: email, full_name: email.split('@')[0] });
-
-    // 3. Assign them to the organization in memberships
-    const { error: membershipError } = await supabaseAdmin.from('memberships').insert({
-      user_id: userId,
-      org_id: org_id,
-      role: role
-    });
-
-    if (membershipError) {
-      return NextResponse.json({ error: membershipError.message }, { status: 500 });
-    }
-
-    return NextResponse.json({ success: true, user: inviteData.user });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
-}
-</file>
-
 <file path="src/app/contacts/[id]/page.tsx">
 "use client";
 import React, { useState, useEffect } from "react";
@@ -4097,6 +4103,206 @@ export default function InboxPage() {
       <Suspense fallback={<div className="flex-1 flex items-center justify-center"><div className="animate-spin w-6 h-6 border-2 border-berry border-t-transparent rounded-full" /></div>}>
         <InboxContent />
       </Suspense>
+    </AppLayout>
+  );
+}
+</file>
+
+<file path="src/app/page.tsx">
+"use client";
+import React, { useEffect, useState } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { useAppStore } from "@/store/useAppStore";
+import { SectionTitle } from "@/components/ui/SectionTitle";
+import { StatCard } from "@/components/ui/StatCard";
+import { TrendingUp, Columns, CheckSquare, Phone, Calendar, TrendingDown, Users } from "lucide-react";
+import { createClient } from "@/lib/supabase";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { Avatar } from "@/components/ui/Avatar";
+
+export default function DashboardPage() {
+  const { currentWorkspace, activeOrgId } = useAppStore();
+  const supabase = createClient();
+  
+  const [metrics, setMetrics] = useState<any>({ 
+    openValue: 0, 
+    activeDeals: 0, 
+    winRate: "0%", 
+    chartData: [], 
+    activities: [],
+    leaderboard: [] 
+  });
+
+  useEffect(() => {
+    if (activeOrgId && currentWorkspace === "agency") {
+      fetchAgencyData();
+    }
+  }, [activeOrgId, currentWorkspace]);
+
+  const fetchAgencyData = async () => {
+    // 1. Fetch Deals
+    const { data: deals } = await supabase.from("deals").select("*").eq("org_id", activeOrgId);
+    
+    // 2. Fetch active memberships to filter the leaderboard
+    const { data: activeMembers } = await supabase
+      .from("memberships")
+      .select("user_id")
+      .eq("org_id", activeOrgId)
+      .eq("status", "active"); // <-- Only evaluate active reps!
+
+    const activeMemberIds = activeMembers?.map(m => m.user_id) || [];
+
+    // 3. Fetch Recent Activities (Audit Log)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const { data: activities } = await supabase
+      .from("activities")
+      .select("*, users(full_name)")
+      .eq("org_id", activeOrgId)
+      .order("created_at", { ascending: false });
+
+    if (deals && activities) {
+      const activeDeals = deals.filter(d => d.stage !== "Active Client");
+      const wonDeals = deals.filter(d => d.stage === "Active Client");
+      const openValue = activeDeals.reduce((sum, d) => sum + Number(d.value), 0);
+      
+      const winRate = deals.length > 0 ? Math.round((wonDeals.length / deals.length) * 100) : 0;
+
+      const STAGES = ["New Lead", "Demo Scheduled", "Proposal Sent", "Contract Sent", "Onboarding", "Active Client"];
+      const chartData = STAGES.map(stage => ({
+        stage: stage.replace(" ", "\n"),
+        count: deals.filter(d => d.stage === stage).length
+      }));
+
+      // 4. Compute Leaderboard (Filtered to active members only)
+      const todaysActivities = activities.filter(
+        a => new Date(a.created_at) >= today && activeMemberIds.includes(a.actor_id)
+      );
+      
+      const repStats: Record<string, number> = {};
+      
+      todaysActivities.forEach(a => {
+        const name = a.users?.full_name || "Unknown Rep";
+        repStats[name] = (repStats[name] || 0) + 1;
+      });
+
+      const leaderboard = Object.entries(repStats)
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count);
+
+      setMetrics({ 
+        openValue, 
+        activeDeals: activeDeals.length, 
+        winRate: `${winRate}%`,
+        chartData, 
+        activities: activities.slice(0, 10), 
+        leaderboard 
+      });
+    }
+  };
+
+  return (
+    <AppLayout>
+      <div className="p-4 md:p-8 max-w-7xl mx-auto">
+        <SectionTitle 
+          eyebrow={currentWorkspace === "agency" ? "Agency Workspace" : "Bloom MedSpa"} 
+          title={currentWorkspace === "agency" ? "Pipeline Overview" : "Front Desk Overview"} 
+        />
+
+        {currentWorkspace === "agency" ? (
+          <>
+            <div className="flex gap-3 md:gap-4 mb-8 flex-wrap">
+              <StatCard label="Open pipeline value" value={`$${metrics.openValue.toLocaleString()}`} icon={TrendingUp} />
+              <StatCard label="Active deals" value={metrics.activeDeals} icon={Columns} />
+              <StatCard label="Activities Today" value={metrics.leaderboard.reduce((s: number, l: any) => s + l.count, 0)} icon={CheckSquare} />
+              <StatCard label="Historical Win Rate" value={metrics.winRate} icon={TrendingUp} />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-6 gap-6">
+              
+              <div className="md:col-span-4 rounded-xl p-6 bg-white border border-line shadow-card flex flex-col">
+                <div className="text-sm font-medium mb-6 text-ink font-body">Pipeline by stage</div>
+                <div className="h-[240px] w-full flex-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={metrics.chartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#E3E1DA" vertical={false} />
+                      <XAxis dataKey="stage" tick={{ fontSize: 11, fontFamily: "var(--font-body)", fill: "#6B6E77" }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 11, fontFamily: "var(--font-mono)", fill: "#6B6E77" }} axisLine={false} tickLine={false} allowDecimals={false} />
+                      <Tooltip cursor={{ fill: "#F5F5F2" }} contentStyle={{ fontFamily: "var(--font-body)", fontSize: 12, borderRadius: 8, border: "1px solid #E3E1DA", boxShadow: "0px 2px 4px rgba(19, 20, 27, 0.04)" }} />
+                      <Bar dataKey="count" fill="#AF3358" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="md:col-span-2 flex flex-col gap-6">
+                <div className="rounded-xl p-5 bg-ink border border-inkSoft shadow-card">
+                  <div className="flex items-center gap-2 mb-4 text-paper">
+                    <Users size={16} />
+                    <span className="text-sm font-medium font-body">Rep Leaderboard (Today)</span>
+                  </div>
+                  <div className="space-y-3">
+                    {metrics.leaderboard.length === 0 ? (
+                      <div className="text-xs text-slate font-body">No activity logged today.</div>
+                    ) : (
+                      metrics.leaderboard.map((rep: any, idx: number) => (
+                        <div key={idx} className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 text-paper text-sm font-body">
+                            <span className="text-slate text-xs font-mono w-3">{idx + 1}.</span>
+                            <Avatar name={rep.name} size={20} className="bg-ink600" />
+                            {rep.name}
+                          </div>
+                          <span className="text-sage font-mono text-sm">{rep.count}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-xl p-5 bg-white border border-line shadow-card flex-1 overflow-hidden flex flex-col">
+                  <div className="text-sm font-medium mb-4 text-ink font-body">Recent System Logs</div>
+                  <div className="space-y-4 flex-1 overflow-y-auto pr-2">
+                    {metrics.activities.length === 0 ? (
+                      <div className="text-xs text-slate font-body text-center mt-4">No recent logs</div>
+                    ) : (
+                      metrics.activities.map((act: any) => (
+                        <div key={act.id} className="flex items-start gap-3">
+                          <Avatar name={act.users?.full_name || "System"} size={26} />
+                          <div>
+                            <div className="text-sm text-ink font-body leading-tight">
+                              <span className="font-medium">{act.users?.full_name || "System"}</span> {act.content.toLowerCase()}
+                            </div>
+                            <div className="text-[10px] text-slate font-mono mt-0.5 text-opacity-70">
+                              {new Date(act.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex gap-3 md:gap-4 mb-8 flex-wrap">
+              <StatCard label="Calls today" value="17" icon={Phone} />
+              <StatCard label="Booked appointments" value="11" icon={Calendar} />
+              <StatCard label="No-show rate" value="4.2%" icon={TrendingDown} />
+              <StatCard label="Revenue this month" value="$28,400" icon={TrendingUp} />
+            </div>
+
+            <div className="rounded-xl p-6 bg-white border border-line shadow-card">
+              <div className="text-sm font-medium mb-4 text-ink font-body">Live Call Intelligence Feed</div>
+              <div className="text-xs text-slate font-body p-4 bg-paperDim rounded border border-line text-center">
+                Retell AI Voice proxy routing will populate this feed. (Data layer pending Retell integration)
+              </div>
+            </div>
+          </>
+        )}
+      </div>
     </AppLayout>
   );
 }
@@ -4844,6 +5050,176 @@ export async function POST(req: Request) {
 }
 </file>
 
+<file path="src/app/api/team/invite/route.ts">
+import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { ResendProvider } from "@/lib/email/ResendProvider";
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export async function POST(req: Request) {
+  try {
+    const { email, role, org_id } = await req.json();
+
+    if (!email || !role || !org_id) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const origin = req.headers.get("origin") || "https://crm.pyrexxai.com";
+    const redirectUrl = `${origin}/auth/update-password`;
+
+    // 1. Fetch the organization details
+    const { data: org, error: orgError } = await supabaseAdmin
+      .from("organizations")
+      .select("name, slug, resend_api_key, sending_domain")
+      .eq("id", org_id)
+      .single();
+
+    if (orgError || !org) {
+      return NextResponse.json({ error: "Failed to resolve organization." }, { status: 400 });
+    }
+
+    // Initialize the Resend provider dynamically (multi-tenant key support)
+    const activeProvider = new ResendProvider(org.resend_api_key || undefined);
+    const emailDomain = org.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "crm.pyrexxai.com";
+    const fromAddress = `hello@${emailDomain}`;
+
+    // 2. Check if the user already exists by querying our synchronized public.users table [20]
+    const { data: existingUser, error: lookupError } = await supabaseAdmin
+      .from("users")
+      .select("id, full_name, email")
+      .eq("email", cleanEmail)
+      .maybeSingle();
+
+    if (lookupError) {
+      console.error("[Team Invite API] Error looking up user profile:", lookupError);
+    }
+
+    if (existingUser) {
+      const existingUserId = existingUser.id;
+
+      // Check if they already have an active membership in this specific organization
+      const { data: existingMember } = await supabaseAdmin
+        .from("memberships")
+        .select("id")
+        .eq("user_id", existingUserId)
+        .eq("org_id", org_id)
+        .maybeSingle();
+
+      if (existingMember) {
+        return NextResponse.json({ error: "This user is already a member of your team." }, { status: 400 });
+      }
+
+      // Generate a secure recovery/password-reset link for the existing user [21]
+      const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+        type: 'recovery', 
+        email: cleanEmail,
+        options: { redirectTo: redirectUrl } 
+      });
+
+      if (linkError) {
+        console.error("[Team Invite API] Failed to generate recovery link:", linkError);
+        return NextResponse.json({ error: "Failed to generate workspace link: " + linkError.message }, { status: 500 });
+      }
+
+      const actionLink = linkData?.properties?.action_link;
+
+      if (!actionLink) {
+        return NextResponse.json({ error: "Failed to resolve secure action link." }, { status: 500 });
+      }
+
+      // Ensure their public profile row is registered in our CRM's users table
+      await supabaseAdmin.from('users').upsert({
+        id: existingUserId,
+        email: cleanEmail,
+        full_name: existingUser.full_name || cleanEmail.split('@')[0]
+      });
+
+      // Insert them into memberships with status 'pending' because they need to configure their password
+      const { error: membershipError } = await supabaseAdmin.from('memberships').insert({
+        user_id: existingUserId,
+        org_id: org_id,
+        role: role,
+        status: 'pending' 
+      });
+
+      if (membershipError) {
+        return NextResponse.json({ error: membershipError.message }, { status: 500 });
+      }
+
+      // Send the custom Welcome email with the secure recovery link [21]
+      const welcomeHtml = `
+        <div style="font-family: sans-serif; padding: 24px; max-width: 480px; border: 1px solid #E3E1DA; border-radius: 12px; background-color: #FFFFFF;">
+          <h2 style="color: #13141B; font-weight: 600;">Welcome to ${org.name}</h2>
+          <p style="color: #3A3D49; font-size: 14px; line-height: 1.5;">
+            You have been added to the <strong>${org.name}</strong> workspace on the Pyrexx AI CRM.
+          </p>
+          <p style="color: #3A3D49; font-size: 14px; line-height: 1.5; margin-bottom: 24px;">
+            To secure your access to this CRM workspace, please set a password for your account using the button below.
+          </p>
+          <div style="text-align: center;">
+            <a href="${actionLink}" style="background-color: #13141B; color: #F5F5F2; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: 500; display: inline-block;">
+              Configure Password & Access
+            </a>
+          </div>
+        </div>
+      `;
+
+      const emailResult = await activeProvider.sendEmail({
+        to: cleanEmail,
+        from: fromAddress,
+        subject: `You've been added to ${org.name} on Pyrexx AI`,
+        text: `You have been added to ${org.name}. Set your password and access your workspace at ${actionLink}`,
+        html: welcomeHtml
+      });
+
+      // UPGRADE: Explicitly throw error if Resend fails, preventing silent success toasts
+      if (emailResult.error) {
+        console.error("[Team Invite API] Email send failed:", emailResult.error);
+        return NextResponse.json({ error: `User added to database, but Resend failed to dispatch email: ${emailResult.error}` }, { status: 500 });
+      }
+
+      return NextResponse.json({ success: true, isNewUser: false });
+    }
+
+    // 4. PATH B: User is brand new. Trigger the standard invitation token flow.
+    const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(cleanEmail, {
+      redirectTo: redirectUrl
+    });
+
+    if (inviteError) {
+      return NextResponse.json({ error: inviteError.message }, { status: 400 });
+    }
+
+    const newUserId = inviteData?.user?.id;
+    if (!newUserId) {
+      return NextResponse.json({ error: "Failed to generate user ID." }, { status: 500 });
+    }
+
+    await supabaseAdmin.from('users').upsert({ id: newUserId, email: cleanEmail, full_name: cleanEmail.split('@')[0] });
+
+    const { error: membershipError } = await supabaseAdmin.from('memberships').insert({
+      user_id: newUserId,
+      org_id: org_id,
+      role: role,
+      status: 'pending' 
+    });
+
+    if (membershipError) {
+      return NextResponse.json({ error: membershipError.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true, isNewUser: true, user: inviteData.user });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+</file>
+
 <file path="src/components/layout/AppLayout.tsx">
 "use client";
 import React from "react";
@@ -5113,201 +5489,6 @@ export default function IntegrationsPage() {
           </div>
         </div>
       )}
-      <Toaster position="top-right" richColors />
-    </AppLayout>
-  );
-}
-</file>
-
-<file path="src/app/settings/team/page.tsx">
-"use client";
-import React, { useState, useEffect } from "react";
-import { AppLayout } from "@/components/layout/AppLayout";
-import { SectionTitle } from "@/components/ui/SectionTitle";
-import { Button } from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
-import { Avatar } from "@/components/ui/Avatar";
-import { UserPlus, Trash2 } from "lucide-react";
-import { createClient } from "@/lib/supabase";
-import { useAppStore } from "@/store/useAppStore";
-import { toast, Toaster } from "sonner";
-import { Modal } from "@/components/ui/Modal";
-
-export default function TeamSettingsPage() {
-  const supabase = createClient();
-  const activeOrgId = useAppStore(s => s.activeOrgId);
-  const userRole = useAppStore(s => s.userRole);
-  const userId = useAppStore(s => s.userId);
-  
-  const [members, setMembers] = useState<any[]>([]);
-  const [isInviteOpen, setIsInviteOpen] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState("rep");
-  const [isInviting, setIsInviting] = useState(false);
-  
-  const [isMounted, setIsMounted] = useState(false);
-  useEffect(() => setIsMounted(true), []);
-
-  const fetchTeam = async () => {
-    if (!activeOrgId) return;
-    const { data } = await supabase.from("memberships").select("role, created_at, users(id, full_name, email)").eq("org_id", activeOrgId).order("created_at", { ascending: true });
-    if (data) setMembers(data);
-  };
-
-  useEffect(() => { fetchTeam(); }, [activeOrgId]);
-
-  const handleInvite = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inviteEmail || !activeOrgId) return;
-    setIsInviting(true);
-    const res = await fetch("/api/team/invite", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: inviteEmail, role: inviteRole, org_id: activeOrgId }) });
-    const data = await res.json();
-    setIsInviting(false);
-    if (res.ok) { toast.success("Invite sent successfully!"); setIsInviteOpen(false); setInviteEmail(""); setInviteRole("rep"); fetchTeam(); }
-    else toast.error(data.error || "Failed to invite user");
-  };
-
-  const handleRoleChange = async (targetUserId: string, newRole: string) => {
-    const { error } = await supabase.from("memberships").update({ role: newRole }).eq("user_id", targetUserId).eq("org_id", activeOrgId);
-    if (error) toast.error("Failed to update role");
-    else { toast.success("Role updated"); fetchTeam(); }
-  };
-
-  const handleRemoveMember = async (targetUserId: string) => {
-    if (!window.confirm("Are you sure you want to revoke this user's access?")) return;
-    const { error } = await supabase.from("memberships").delete().eq("user_id", targetUserId).eq("org_id", activeOrgId);
-    if (error) toast.error("Failed to remove member");
-    else { toast.success("User removed"); fetchTeam(); }
-  };
-
-  // FIX: Include Admin globally
-  const isManager = ['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '');
-
-  return (
-    <AppLayout>
-      <div className="p-4 md:p-8 max-w-5xl mx-auto flex-1 w-full">
-        <SectionTitle 
-          eyebrow="Settings"
-          title="Team Management" 
-          action={
-            isMounted && isManager ? (
-              <Button icon={UserPlus} onClick={() => setIsInviteOpen(true)}>Invite Member</Button>
-            ) : null
-          }
-        />
-
-        {/* Desktop Table */}
-        <div className="hidden md:block rounded-xl overflow-x-auto border border-line bg-white shadow-card">
-          <table className="w-full text-sm font-body min-w-[600px]">
-            <thead className="bg-paperDim border-b border-line">
-              <tr>
-                <th className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em] w-1/2">Team Member</th>
-                <th className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em] w-1/4">Role</th>
-                <th className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em] w-1/4">Joined</th>
-                <th className="text-right px-5 py-3 text-xs uppercase text-slate tracking-[0.05em]">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {members.map((m) => {
-                const targetId = m.users?.id;
-                const isSelf = targetId === userId;
-                return (
-                  <tr key={targetId} className="border-b border-line hover:bg-paperDim/50 transition-colors group">
-                    <td className="px-5 py-3">
-                      <div className="flex items-center gap-3">
-                        <Avatar name={m.users?.full_name || m.users?.email || "Unknown"} size={32} />
-                        <div>
-                          <div className="font-medium text-ink flex items-center gap-2">
-                            {m.users?.full_name || "Invited User"}
-                            {isSelf && <span className="text-[10px] bg-inkSoft text-paper px-1.5 py-0.5 rounded uppercase tracking-wide">You</span>}
-                          </div>
-                          <div className="text-xs text-slate font-mono">{m.users?.email}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-5 py-3">
-                      {isManager && !isSelf ? (
-                        <select value={m.role} onChange={(e) => handleRoleChange(targetId, e.target.value)} className="px-2 py-1 bg-paperDim border border-transparent rounded outline-none focus:border-berry text-xs uppercase font-medium text-ink cursor-pointer hover:bg-[#E0DFDA] transition-colors">
-                          <option value="rep">REP</option>
-                          <option value="manager">MANAGER</option>
-                          <option value="owner">OWNER</option>
-                          <option value="admin">ADMIN</option>
-                        </select>
-                      ) : (
-                        <span className="px-2 py-1 rounded text-xs uppercase font-medium bg-paperDim text-slate">{m.role}</span>
-                      )}
-                    </td>
-                    <td className="px-5 py-3 text-slate">{new Date(m.created_at).toLocaleDateString()}</td>
-                    <td className="px-5 py-3 text-right">
-                      {isManager && !isSelf && (
-                        <button onClick={() => handleRemoveMember(targetId)} className="p-2 text-slate hover:text-berry opacity-0 group-hover:opacity-100 transition-all rounded-lg hover:bg-berrySoft/50" title="Revoke Access">
-                          <Trash2 size={16} />
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Mobile Stacked Cards (Fixes the cluttered UI) */}
-        <div className="md:hidden space-y-3">
-          {members.map((m) => {
-            const targetId = m.users?.id;
-            const isSelf = targetId === userId;
-            return (
-              <div key={targetId} className="bg-white border border-line rounded-xl p-4 shadow-sm">
-                <div className="flex items-center gap-3 mb-3">
-                  <Avatar name={m.users?.full_name || m.users?.email || "Unknown"} size={40} />
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium text-ink flex items-center gap-2 truncate">
-                      {m.users?.full_name || "Invited User"}
-                      {isSelf && <span className="text-[10px] bg-inkSoft text-paper px-1.5 py-0.5 rounded uppercase tracking-wide">You</span>}
-                    </div>
-                    <div className="text-xs text-slate font-mono truncate">{m.users?.email}</div>
-                  </div>
-                </div>
-                <div className="flex items-center justify-between pt-3 border-t border-line">
-                  {isManager && !isSelf ? (
-                    <select value={m.role} onChange={(e) => handleRoleChange(targetId, e.target.value)} className="px-2 py-1 bg-paperDim rounded text-xs uppercase font-medium text-ink outline-none">
-                      <option value="rep">REP</option>
-                      <option value="manager">MANAGER</option>
-                      <option value="owner">OWNER</option>
-                      <option value="admin">ADMIN</option>
-                    </select>
-                  ) : <span className="px-2 py-1 rounded text-xs uppercase font-medium bg-paperDim text-slate">{m.role}</span>}
-                  
-                  {isManager && !isSelf && (
-                    <button onClick={() => handleRemoveMember(targetId)} className="text-berry text-xs font-medium px-2 py-1 rounded hover:bg-berrySoft/50">
-                      Revoke
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        <Modal isOpen={isInviteOpen} onClose={() => setIsInviteOpen(false)} title="Invite Team Member">
-          <form onSubmit={handleInvite} className="space-y-4">
-            <Input label="Email Address" type="email" placeholder="name@pyrexxai.com" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} required />
-            <div className="w-full flex flex-col gap-1.5 mb-3">
-              <label className="text-xs text-slate font-body font-medium">Role</label>
-              <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)} className="w-full px-3 py-2 rounded-lg text-sm outline-none bg-paperDim font-body text-ink border border-transparent focus:border-berry transition-all">
-                <option value="rep">Sales Rep (Restricted View)</option>
-                <option value="manager">Manager (Global View)</option>
-                <option value="admin">Admin (Full Access)</option>
-              </select>
-            </div>
-            <div className="flex justify-end gap-3 pt-4 border-t border-line">
-              <Button type="button" variant="ghost" onClick={() => setIsInviteOpen(false)}>Cancel</Button>
-              <Button type="submit" disabled={isInviting}>{isInviting ? "Sending Invite..." : "Send Invite"}</Button>
-            </div>
-          </form>
-        </Modal>
-      </div>
       <Toaster position="top-right" richColors />
     </AppLayout>
   );
@@ -5588,6 +5769,254 @@ export function Topbar() {
         </div>
       </div>
     </div>
+  );
+}
+</file>
+
+<file path="src/app/settings/team/page.tsx">
+"use client";
+import React, { useState, useEffect } from "react";
+import { AppLayout } from "@/components/layout/AppLayout";
+import { SectionTitle } from "@/components/ui/SectionTitle";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Avatar } from "@/components/ui/Avatar";
+import { Badge } from "@/components/ui/Badge";
+import { UserPlus, Trash2 } from "lucide-react";
+import { createClient } from "@/lib/supabase";
+import { useAppStore } from "@/store/useAppStore";
+import { toast, Toaster } from "sonner";
+import { Modal } from "@/components/ui/Modal";
+import { logger } from "@/lib/logger";
+
+export default function TeamSettingsPage() {
+  const supabase = createClient();
+  const activeOrgId = useAppStore(s => s.activeOrgId);
+  const userRole = useAppStore(s => s.userRole);
+  const userId = useAppStore(s => s.userId);
+  
+  const [members, setMembers] = useState<any[]>([]);
+  const [isInviteOpen, setIsInviteOpen] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("rep");
+  const [isInviting, setIsInviting] = useState(false);
+  const [isMounted, setIsMounted] = useState(false);
+  
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  const fetchTeam = async () => {
+    if (!activeOrgId) return;
+    
+    logger.info('TeamSettingsPage', 'Fetching team members...');
+    
+    // Selecting status column
+    const { data, error } = await supabase
+      .from("memberships")
+      .select("role, status, created_at, users(id, full_name, email)")
+      .eq("org_id", activeOrgId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      logger.error('TeamSettingsPage', 'Fetch error', error);
+      toast.error("Failed to load team data.");
+      return;
+    }
+
+    if (data) setMembers(data);
+  };
+
+  useEffect(() => {
+    fetchTeam();
+  }, [activeOrgId]);
+
+  const handleInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteEmail || !activeOrgId) return;
+    
+    setIsInviting(true);
+    const res = await fetch("/api/team/invite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: inviteEmail, role: inviteRole, org_id: activeOrgId })
+    });
+
+    const data = await res.json();
+    setIsInviting(false);
+
+    if (res.ok) {
+      toast.success(data.isNewUser ? "Invitation sent!" : "Existing Pyrexx user added directly!");
+      setIsInviteOpen(false);
+      setInviteEmail("");
+      setInviteRole("rep");
+      fetchTeam();
+    } else {
+      toast.error(data.error || "Failed to invite user");
+    }
+  };
+
+  const handleRoleChange = async (targetUserId: string, newRole: string) => {
+    const { error } = await supabase.from("memberships").update({ role: newRole }).eq("user_id", targetUserId).eq("org_id", activeOrgId);
+    if (error) {
+      logger.error('TeamSettingsPage', 'Role update error', error);
+      toast.error("Failed to update role");
+    } else { 
+      toast.success("Role updated"); 
+      fetchTeam(); 
+    }
+  };
+
+  const handleRemoveMember = async (targetUserId: string) => {
+    if (!window.confirm("Are you sure you want to revoke this user's access?")) return;
+    const { error } = await supabase.from("memberships").delete().eq("user_id", targetUserId).eq("org_id", activeOrgId);
+    if (error) {
+      logger.error('TeamSettingsPage', 'Remove member error', error);
+      toast.error("Failed to remove member");
+    } else { 
+      toast.success("User removed"); 
+      fetchTeam(); 
+    }
+  };
+
+  const isManager = ['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '');
+
+  return (
+    <AppLayout>
+      <div className="p-4 md:p-8 max-w-5xl mx-auto flex-1 w-full">
+        <SectionTitle 
+          eyebrow="Settings"
+          title="Team Management" 
+          action={
+            isMounted && isManager ? (
+              <Button icon={UserPlus} onClick={() => setIsInviteOpen(true)}>Invite Member</Button>
+            ) : null
+          }
+        />
+
+        {/* Desktop Table */}
+        <div className="hidden md:block rounded-xl overflow-x-auto border border-line bg-white shadow-card">
+          <table className="w-full text-sm font-body min-w-[600px]">
+            <thead className="bg-paperDim border-b border-line">
+              <tr>
+                <th className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em] w-1/2">Team Member</th>
+                <th className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em] w-1/4">Role</th>
+                <th className="text-left px-5 py-3 text-xs uppercase text-slate tracking-[0.05em] w-1/4">Status</th>
+                <th className="text-right px-5 py-3 text-xs uppercase text-slate tracking-[0.05em]">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {members.map((m) => {
+                const targetId = m.users?.id;
+                const isSelf = targetId === userId;
+                return (
+                  <tr key={targetId} className="border-b border-line hover:bg-paperDim/50 transition-colors group">
+                    <td className="px-5 py-3">
+                      <div className="flex items-center gap-3">
+                        <Avatar name={m.users?.full_name || m.users?.email || "Unknown"} size={32} />
+                        <div>
+                          <div className="font-medium text-ink flex items-center gap-2">
+                            {m.users?.full_name || "Invited User"}
+                            {isSelf && <span className="text-[10px] bg-inkSoft text-paper px-1.5 py-0.5 rounded uppercase tracking-wide">You</span>}
+                          </div>
+                          <div className="text-xs text-slate font-mono">{m.users?.email}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-5 py-3">
+                      {isManager && !isSelf ? (
+                        <select value={m.role} onChange={(e) => handleRoleChange(targetId, e.target.value)} className="px-2 py-1 bg-paperDim border border-transparent rounded outline-none focus:border-berry text-xs uppercase font-medium text-ink cursor-pointer hover:bg-[#E0DFDA] transition-colors">
+                          <option value="rep">REP</option>
+                          <option value="manager">MANAGER</option>
+                          <option value="owner">OWNER</option>
+                          <option value="admin">ADMIN</option>
+                        </select>
+                      ) : (
+                        <span className="px-2 py-1 rounded text-xs uppercase font-medium bg-paperDim text-slate">{m.role}</span>
+                      )}
+                    </td>
+                    <td className="px-5 py-3">
+                      {/* UPGRADE: Display a pending badge if status is pending */}
+                      <Badge variant={m.status === 'active' ? 'sage' : 'amber'}>
+                        {m.status?.toUpperCase() || 'ACTIVE'}
+                      </Badge>
+                    </td>
+                    <td className="px-5 py-3 text-right">
+                      {isManager && !isSelf && (
+                        <button onClick={() => handleRemoveMember(targetId)} className="p-2 text-slate hover:text-berry opacity-0 group-hover:opacity-100 transition-all rounded-lg hover:bg-berrySoft/50" title="Revoke Access">
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Mobile Stacked Cards */}
+        <div className="md:hidden space-y-3">
+          {members.map((m) => {
+            const targetId = m.users?.id;
+            const isSelf = targetId === userId;
+            return (
+              <div key={targetId} className="bg-white border border-line rounded-xl p-4 shadow-sm">
+                <div className="flex items-center gap-3 mb-3">
+                  <Avatar name={m.users?.full_name || m.users?.email || "Unknown"} size={40} />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-ink flex items-center gap-2 truncate">
+                      {m.users?.full_name || "Invited User"}
+                      {isSelf && <span className="text-[10px] bg-inkSoft text-paper px-1.5 py-0.5 rounded uppercase tracking-wide">You</span>}
+                    </div>
+                    <div className="text-xs text-slate font-mono truncate">{m.users?.email}</div>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between pt-3 border-t border-line">
+                  {isManager && !isSelf ? (
+                    <select value={m.role} onChange={(e) => handleRoleChange(targetId, e.target.value)} className="px-2 py-1 bg-paperDim rounded text-xs uppercase font-medium text-ink outline-none">
+                      <option value="rep">REP</option>
+                      <option value="manager">MANAGER</option>
+                      <option value="owner">OWNER</option>
+                      <option value="admin">ADMIN</option>
+                    </select>
+                  ) : <span className="px-2 py-1 rounded text-xs uppercase font-medium bg-paperDim text-slate">{m.role}</span>}
+                  
+                  <Badge variant={m.status === 'active' ? 'sage' : 'amber'}>
+                    {m.status?.toUpperCase() || 'ACTIVE'}
+                  </Badge>
+
+                  {isManager && !isSelf && (
+                    <button onClick={() => handleRemoveMember(targetId)} className="text-berry text-xs font-medium px-2 py-1 rounded hover:bg-berrySoft/50">
+                      Revoke
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <Modal isOpen={isInviteOpen} onClose={() => setIsInviteOpen(false)} title="Invite Team Member">
+          <form onSubmit={handleInvite} className="space-y-4">
+            <Input label="Email Address" type="email" placeholder="name@pyrexxai.com" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} required />
+            <div className="w-full flex flex-col gap-1.5 mb-3">
+              <label className="text-xs text-slate font-body font-medium">Role</label>
+              <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)} className="w-full px-3 py-2 rounded-lg text-sm outline-none bg-paperDim font-body text-ink border border-transparent focus:border-berry transition-all">
+                <option value="rep">Sales Rep (Restricted View)</option>
+                <option value="manager">Manager (Global View)</option>
+                <option value="admin">Admin (Full Access)</option>
+              </select>
+            </div>
+            <div className="flex justify-end gap-3 pt-4 border-t border-line">
+              <Button type="button" variant="ghost" onClick={() => setIsInviteOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={isInviting}>{isInviting ? "Sending Invite..." : "Send Invite"}</Button>
+            </div>
+          </form>
+        </Modal>
+      </div>
+      <Toaster position="top-right" richColors />
+    </AppLayout>
   );
 }
 </file>

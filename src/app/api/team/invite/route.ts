@@ -30,13 +30,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Failed to resolve organization." }, { status: 400 });
     }
 
-    // Initialize the Resend provider dynamically
+    // Initialize the Resend provider dynamically (multi-tenant key support)
     const activeProvider = new ResendProvider(org.resend_api_key || undefined);
     const emailDomain = org.sending_domain || process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "crm.pyrexxai.com";
     const fromAddress = `hello@${emailDomain}`;
 
-    // 2. FIX: Check if the user already exists by querying our synchronized public.users table [20]
-    // This perfectly bypasses the missing GoTrueAdminApi method
+    // 2. Check if the user already exists by querying our synchronized public.users table [20]
     const { data: existingUser, error: lookupError } = await supabaseAdmin
       .from("users")
       .select("id, full_name, email")
@@ -62,18 +61,6 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "This user is already a member of your team." }, { status: 400 });
       }
 
-      // Insert them into memberships with status 'pending' because they need to configure their password
-      const { error: membershipError } = await supabaseAdmin.from('memberships').insert({
-        user_id: existingUserId,
-        org_id: org_id,
-        role: role,
-        status: 'pending' 
-      });
-
-      if (membershipError) {
-        return NextResponse.json({ error: membershipError.message }, { status: 500 });
-      }
-
       // Generate a secure recovery/password-reset link for the existing user [21]
       const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
         type: 'recovery', 
@@ -90,6 +77,25 @@ export async function POST(req: Request) {
 
       if (!actionLink) {
         return NextResponse.json({ error: "Failed to resolve secure action link." }, { status: 500 });
+      }
+
+      // Ensure their public profile row is registered in our CRM's users table
+      await supabaseAdmin.from('users').upsert({
+        id: existingUserId,
+        email: cleanEmail,
+        full_name: existingUser.full_name || cleanEmail.split('@')[0]
+      });
+
+      // Insert them into memberships with status 'pending' because they need to configure their password
+      const { error: membershipError } = await supabaseAdmin.from('memberships').insert({
+        user_id: existingUserId,
+        org_id: org_id,
+        role: role,
+        status: 'pending' 
+      });
+
+      if (membershipError) {
+        return NextResponse.json({ error: membershipError.message }, { status: 500 });
       }
 
       // Send the custom Welcome email with the secure recovery link [21]
@@ -110,7 +116,7 @@ export async function POST(req: Request) {
         </div>
       `;
 
-      await activeProvider.sendEmail({
+      const emailResult = await activeProvider.sendEmail({
         to: cleanEmail,
         from: fromAddress,
         subject: `You've been added to ${org.name} on Pyrexx AI`,
@@ -118,10 +124,16 @@ export async function POST(req: Request) {
         html: welcomeHtml
       });
 
+      // UPGRADE: Explicitly throw error if Resend fails, preventing silent success toasts
+      if (emailResult.error) {
+        console.error("[Team Invite API] Email send failed:", emailResult.error);
+        return NextResponse.json({ error: `User added to database, but Resend failed to dispatch email: ${emailResult.error}` }, { status: 500 });
+      }
+
       return NextResponse.json({ success: true, isNewUser: false });
     }
 
-    // 3. PATH B: User is brand new. Trigger the standard invitation token flow.
+    // 4. PATH B: User is brand new. Trigger the standard invitation token flow.
     const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(cleanEmail, {
       redirectTo: redirectUrl
     });

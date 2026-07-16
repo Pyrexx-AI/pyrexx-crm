@@ -7,7 +7,6 @@ import { createClient } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
 import { toast, Toaster } from "sonner";
 
-// Mock Voice Agent logs for the right-hand panel telemetry effect
 const TELEMETRY_FEED = [
   { time: "09:23:44", status: "positive", msg: "Inbound call: Bloom Aesthetics" },
   { time: "09:23:45", status: "neutral", msg: "Greeting dispatched: 'Hi, thank you for calling...'" },
@@ -27,11 +26,8 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isForgotPassword, setIsForgotPassword] = useState(false);
-
-  // Telemetry loop state
   const [visibleLogs, setVisibleLogs] = useState<any[]>([]);
 
-  // Simulation loop effect for the right-hand side pane
   useEffect(() => {
     setVisibleLogs([TELEMETRY_FEED[0], TELEMETRY_FEED[1], TELEMETRY_FEED[2]]);
     
@@ -39,7 +35,7 @@ export default function LoginPage() {
     const interval = setInterval(() => {
       setVisibleLogs(prev => {
         const next = [...prev, TELEMETRY_FEED[index]];
-        if (next.length > 5) next.shift(); // Keep only last 5 lines on screen
+        if (next.length > 5) next.shift(); 
         return next;
       });
       index = (index + 1) % TELEMETRY_FEED.length;
@@ -73,29 +69,31 @@ export default function LoginPage() {
     }
 
     setIsLoading(true);
-    const origin = typeof window !== "undefined" ? window.location.origin : "https://crm.pyrexxai.com";
-    
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${origin}/auth/update-password`,
+
+    // UPGRADE: Hit our new, custom server-side endpoint instead of Supabase client reset
+    const res = await fetch("/api/auth/reset-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
     });
 
+    const data = await res.json();
     setIsLoading(false);
 
-    if (error) {
-      toast.error("Failed to send reset link", { description: error.message });
-    } else {
+    if (res.ok) {
       toast.success("Security reset link dispatched!", {
         description: "Please check your inbox for instructions to set your password."
       });
       setIsForgotPassword(false);
       setPassword("");
+    } else {
+      toast.error("Failed to send reset link", { description: data.error || "Unknown server error" });
     }
   };
 
   return (
     <div className="min-h-screen w-full flex bg-paper">
       
-      {/* LEFT SIDE: Clean, Focused Auth Forms */}
       <div className="flex-1 md:max-w-md lg:max-w-[480px] xl:max-w-[540px] flex flex-col justify-center px-8 sm:px-12 md:px-16 bg-white border-r border-line relative h-full min-h-screen">
         <div className="w-full max-w-sm mx-auto">
           <div className="flex flex-col mb-8">
@@ -116,7 +114,7 @@ export default function LoginPage() {
           {isForgotPassword ? (
             <form onSubmit={handleForgotPassword} className="space-y-4">
               <Input 
-                label="Email Address" 
+                label="Reset Email Address" 
                 type="email" 
                 placeholder="name@pyrexxai.com"
                 value={email}
@@ -171,14 +169,10 @@ export default function LoginPage() {
         </div>
       </div>
 
-      {/* RIGHT SIDE: Glowing, Immersive Voice Agent Telemetry (Desktop Only) */}
       <div className="hidden md:flex flex-1 flex-col justify-between p-12 lg:p-16 bg-ink relative overflow-hidden">
-        
-        {/* Glow Effects */}
         <div className="absolute top-1/4 left-1/4 w-96 h-96 rounded-full bg-berry/10 filter blur-[80px] pointer-events-none" />
         <div className="absolute bottom-1/4 right-1/4 w-96 h-96 rounded-full bg-sage/5 filter blur-[100px] pointer-events-none" />
 
-        {/* Top Header */}
         <div className="flex items-center justify-between z-10">
           <div className="flex items-center gap-2">
             <PulseTrace sentiment="positive" size="sm" />
@@ -189,7 +183,6 @@ export default function LoginPage() {
           </span>
         </div>
 
-        {/* Center Display Typography */}
         <div className="max-w-xl my-auto z-10">
           <h2 className="font-display text-[56px] text-paper leading-[1.05] tracking-tight">
             The intelligent proxy connecting <span className="italic text-berry">voice agents</span> to medical records.
@@ -199,7 +192,6 @@ export default function LoginPage() {
           </p>
         </div>
 
-        {/* Bottom Live Telemetry Simulator */}
         <div className="rounded-xl bg-inkSoft border border-inkSoft/80 p-5 shadow-2xl max-w-xl w-full z-10 backdrop-blur-md">
           <div className="flex items-center justify-between mb-4">
             <span className="text-[10px] uppercase tracking-wide text-slate font-body font-semibold">Live Inbound Ingestion Loop</span>
