@@ -8,57 +8,43 @@ import { logger } from '@/lib/logger';
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const supabase = createClient();
   const router = useRouter();
-  
-  const { 
-    activeOrgId, setActiveOrgId, 
-    currentWorkspace, setWorkspace, 
-    setUser, setUserName, setUserEmail, setWorkspaces 
-  } = useAppStore();
-  
   const [isBootstrapping, setIsBootstrapping] = useState(true);
 
   useEffect(() => {
     let isMounted = true;
 
     const bootstrap = async () => {
-      logger.info('AuthProvider', 'Starting bootstrap sequence...', { activeOrgId });
-      
       try {
-        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        const { data: { user } } = await supabase.auth.getUser();
         
-        if (authError) {
-          logger.error('AuthProvider', 'Auth Error on getUser', authError);
-        }
-        
+        // Use getState() to safely read/write to the store without triggering infinite loop dependencies
+        const store = useAppStore.getState();
+
         if (!user) {
-          logger.info('AuthProvider', 'No active user found. Redirecting to login.');
           if (isMounted) setIsBootstrapping(false);
           return;
         }
 
-        const { data: profile, error: profileError } = await supabase.from('users').select('full_name, email').eq('id', user.id).maybeSingle();
-        if (profileError) {
-          logger.error('AuthProvider', 'Failed to fetch user profile', profileError);
-        }
+        // 1. Fetch Profile Details
+        const { data: profile } = await supabase.from('users').select('full_name, email').eq('id', user.id).maybeSingle();
         
         const fallbackName = user.email?.split('@')[0] || "User";
-        setUserName(profile?.full_name || fallbackName);
-        setUserEmail(profile?.email || user.email || "");
+        store.setUserName(profile?.full_name || fallbackName);
+        store.setUserEmail(profile?.email || user.email || "");
 
-        const { data: memberships, error: membershipError } = await supabase
+        // 2. Fetch Active Workspace Memberships
+        const { data: memberships } = await supabase
           .from('memberships')
-          .select('role, org_id, organizations(id, name, type)')
-          .eq('user_id', user.id);
-
-        if (membershipError) {
-          logger.error('AuthProvider', 'Failed to fetch memberships', membershipError);
-        }
+          .select('role, org_id, status, organizations(id, name, type)')
+          .eq('user_id', user.id)
+          .eq('status', 'active'); 
 
         if (memberships && memberships.length > 0) {
           const availableWorkspaces: Workspace[] = [];
           let agencyMembership: any = null;
 
           memberships.forEach((m: any) => {
+            // Handle array unwrapping if PostgREST returns a joined array
             const org = Array.isArray(m.organizations) ? m.organizations[0] : m.organizations;
             if (org) {
               availableWorkspaces.push({ 
@@ -70,47 +56,72 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             }
           });
 
-          setWorkspaces(availableWorkspaces);
+          store.setWorkspaces(availableWorkspaces);
 
-          // By this point Zustand has successfully hydrated naturally
-          const isSavedOrgValid = availableWorkspaces.find(w => w.id === activeOrgId);
+          // 3. Resolve Active Organization (Hydration Fallback)
+          let targetOrgId = store.activeOrgId; 
+          
+          if (!targetOrgId) {
+            try {
+              const persistedData = localStorage.getItem('pyrexx-crm-storage');
+              if (persistedData) {
+                const parsed = JSON.parse(persistedData);
+                if (parsed?.state?.activeOrgId) {
+                  targetOrgId = parsed.state.activeOrgId;
+                }
+              }
+            } catch (e) {
+              logger.error('AuthProvider', 'Storage parse error', e);
+            }
+          }
 
-          if (isSavedOrgValid && activeOrgId) {
-            const currentMembership = memberships.find((m: any) => m.org_id === activeOrgId);
-            setUser(user.id, currentMembership?.role || 'rep');
-            logger.info('AuthProvider', 'Restored validated workspace from storage', { activeOrgId });
+          // Validate that the saved org actually exists in their current active memberships
+          const isSavedOrgValid = availableWorkspaces.find(w => w.id === targetOrgId);
+
+          if (isSavedOrgValid && targetOrgId) {
+            store.setActiveOrgId(targetOrgId);
+            const currentMembership = memberships.find((m: any) => m.org_id === targetOrgId);
+            store.setUser(user.id, currentMembership?.role || 'rep');
           } else {
+            // Safe fallback if their previous workspace was deleted or they are a brand new user
             const fallbackOrg = agencyMembership || memberships[0];
             const resolvedOrg = Array.isArray(fallbackOrg.organizations) 
               ? fallbackOrg.organizations[0] 
               : fallbackOrg.organizations;
               
-            const fallbackType = resolvedOrg?.type || 'clinic';
-            
-            setActiveOrgId(fallbackOrg.org_id);
-            setWorkspace(fallbackType as 'agency' | 'clinic');
-            setUser(user.id, fallbackOrg.role);
-            logger.info('AuthProvider', 'Fallback workspace assigned', { orgId: fallbackOrg.org_id });
+            store.setActiveOrgId(fallbackOrg.org_id);
+            store.setWorkspace((resolvedOrg?.type as 'agency' | 'clinic') || 'clinic');
+            store.setUser(user.id, fallbackOrg.role);
           }
         } else {
-          setUser(user.id, null);
+          // User exists but has no active workspaces (e.g., they were removed from all teams)
+          store.setUser(user.id, null);
+          store.setWorkspaces([]);
+          store.setActiveOrgId(null);
         }
-      } catch (err) {
-        logger.error('AuthProvider', 'Fatal error during bootstrap', err);
+      } catch (error) {
+        logger.error('AuthProvider', 'Fatal error during bootstrap', error);
       } finally {
         if (isMounted) setIsBootstrapping(false);
       }
     };
 
+    // Initialize boot sequence on hard page load
     bootstrap();
 
+    // Listen for Auth events to trigger state hydration dynamically
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_OUT') {
-        setActiveOrgId(null);
-        setUser(null, null);
-        setUserName(null);
-        setUserEmail(null);
-        setWorkspaces([]);
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        // Crucial: Hydrates the profile instantly when they log in
+        bootstrap();
+      } else if (event === 'SIGNED_OUT') {
+        // Wipes the global state cleanly on logout
+        const store = useAppStore.getState();
+        store.setActiveOrgId(null);
+        store.setUser(null, null);
+        store.setUserName(null);
+        store.setUserEmail(null);
+        store.setWorkspaces([]);
         router.push('/auth/login');
       }
     });
@@ -119,7 +130,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isMounted = false;
       subscription.unsubscribe();
     };
-  }, [supabase, activeOrgId, currentWorkspace, setActiveOrgId, setUser, setUserName, setUserEmail, setWorkspace, setWorkspaces, router]);
+  }, [supabase, router]); // Clean dependencies prevent infinite re-render loops
 
   if (isBootstrapping) {
     return (
