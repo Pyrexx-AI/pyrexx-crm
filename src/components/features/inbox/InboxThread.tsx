@@ -26,38 +26,34 @@ export function InboxThread({ threadId, contactId, contactName, contactEmail, or
   const [isSending, setIsSending] = useState(false);
   const [attachments, setAttachments] = useState<{ filename: string; path: string }[]>([]);
   const [isUploading, setIsUploading] = useState(false);
-  const [editorKey, setEditorKey] = useState(0); // Force Tiptap reset
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const endOfMessagesRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    let isMounted = true;
-    
-    const fetchMessages = async () => {
-      const { data } = await supabase
-        .from("messages")
-        .select("*")
-        .eq("thread_id", threadId)
-        .order("created_at", { ascending: true });
-      if (isMounted && data) setMessages(data);
-    };
+  const fetchMessages = async () => {
+    const { data } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("thread_id", threadId)
+      .order("created_at", { ascending: true });
+    if (data) setMessages(data);
+  };
 
+  useEffect(() => {
     fetchMessages();
     supabase.from("threads").update({ is_unread: false }).eq("id", threadId).then();
     
+    // FIX: Unique channel binding to eliminate WebSocket collisions
+    const channelName = `messages_${threadId}`;
     const channel = supabase
-      .channel("messages_channel")
+      .channel(channelName)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `thread_id=eq.${threadId}` }, () => {
         fetchMessages();
       })
       .subscribe();
 
-    return () => { 
-      isMounted = false; 
-      supabase.removeChannel(channel); 
-    };
-  }, [threadId, supabase]);
+    return () => { supabase.removeChannel(channel); };
+  }, [threadId]);
 
   useEffect(() => {
     endOfMessagesRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -72,15 +68,14 @@ export function InboxThread({ threadId, contactId, contactName, contactEmail, or
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const fileExt = file.name.includes('.') ? file.name.split('.').pop() : 'file';
+      const fileExt = file.name.split('.').pop();
       const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
       const filePath = `${orgId}/${fileName}`;
 
       const { error: uploadError } = await supabase.storage.from('attachments').upload(filePath, file);
       
       if (!uploadError) {
-        const { data } = supabase.storage.from('attachments').getPublicUrl(filePath);
-        newAttachments.push({ filename: file.name, path: data.publicUrl });
+        newAttachments.push({ filename: file.name, path: filePath });
       } else {
         toast.error(`Failed to upload ${file.name}`);
       }
@@ -118,7 +113,7 @@ export function InboxThread({ threadId, contactId, contactName, contactEmail, or
       setHtmlReply("");
       setTextReply("");
       setAttachments([]);
-      setEditorKey(prev => prev + 1); // Forcibly clears uncontrolled Tiptap instance
+      fetchMessages();
     } else {
       toast.error("Failed to send email");
     }
@@ -158,18 +153,15 @@ export function InboxThread({ threadId, contactId, contactName, contactEmail, or
                 {msg.attachments && msg.attachments.length > 0 && (
                   <div className={`mt-3 pt-3 border-t flex flex-col gap-2 ${isOutbound ? 'border-inkSoft' : 'border-line'}`}>
                     {msg.attachments.map((att: any, i: number) => (
-                      <a 
+                      <div 
                         key={i} 
-                        href={att.path} 
-                        target="_blank" 
-                        rel="noreferrer"
-                        className={`flex items-center gap-2 text-xs p-2 rounded-lg transition-colors ${
-                          isOutbound ? 'bg-inkSoft hover:bg-ink600 text-paper' : 'bg-paperDim hover:bg-[#E0DFDA] text-ink'
+                        className={`flex items-center gap-2 text-xs p-2 rounded-lg ${
+                          isOutbound ? 'bg-inkSoft text-paper' : 'bg-paperDim text-ink'
                         }`}
                       >
                         <FileText size={14} className={isOutbound ? 'text-slate' : 'text-berry'} />
                         <span className="truncate">{att.filename}</span>
-                      </a>
+                      </div>
                     ))}
                   </div>
                 )}
@@ -201,7 +193,6 @@ export function InboxThread({ threadId, contactId, contactName, contactEmail, or
         <div className="flex items-end gap-3">
           <div className="flex-1">
             <RichTextEditor 
-              key={editorKey}
               content={htmlReply} 
               onChange={(html, text) => { setHtmlReply(html); setTextReply(text); }} 
             />

@@ -10,123 +10,102 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   
   const { 
-    activeOrgId, setActiveOrgId, 
-    currentWorkspace, setWorkspace, 
+    setActiveOrgId, setWorkspace, 
     setUser, setUserName, setUserEmail, setWorkspaces 
   } = useAppStore();
   
   const [isBootstrapping, setIsBootstrapping] = useState(true);
 
-  useEffect(() => {
-    let isMounted = true;
-
-    const bootstrap = async () => {
-      logger.info('AuthProvider', 'Starting bootstrap sequence...', { activeOrgId });
+  const bootstrap = async (authUser?: any) => {
+    logger.info('AuthProvider', 'Executing session bootstrap...');
+    
+    try {
+      const user = authUser || (await supabase.auth.getUser()).data.user;
       
-      try {
-        const { data: { user }, error: authError } = await supabase.auth.getUser();
-        
-        if (authError) {
-          logger.error('AuthProvider', 'Auth Error on getUser', authError);
-        }
-        
-        if (!user) {
-          logger.info('AuthProvider', 'No active user found. Redirecting to login.');
-          if (isMounted) setIsBootstrapping(false);
-          return;
-        }
-
-        // Fetch user profile from public.users with fallback support
-        const { data: profile, error: profileError } = await supabase
-          .from('users')
-          .select('full_name, email')
-          .eq('id', user.id)
-          .maybeSingle();
-
-        if (profileError) {
-          logger.error('AuthProvider', 'Failed to fetch user profile', profileError);
-        }
-        
-        const fallbackName = user.email?.split('@')[0] || "User";
-        setUserName(profile?.full_name || fallbackName);
-        setUserEmail(profile?.email || user.email || "");
-
-        // Fetch organization memberships
-        const { data: memberships, error: membershipError } = await supabase
-          .from('memberships')
-          .select('role, org_id, organizations(id, name, type)')
-          .eq('user_id', user.id);
-
-        if (membershipError) {
-          logger.error('AuthProvider', 'Failed to fetch memberships', membershipError);
-        }
-
-        if (memberships && memberships.length > 0) {
-          const availableWorkspaces: Workspace[] = [];
-          let targetOrgId = activeOrgId; 
-          let agencyMembership: any = null;
-
-          memberships.forEach((m: any) => {
-            const org = Array.isArray(m.organizations) ? m.organizations[0] : m.organizations;
-            if (org) {
-              availableWorkspaces.push({ 
-                id: org.id, 
-                name: org.name, 
-                type: org.type as 'agency' | 'clinic' 
-              });
-              if (org.type === 'agency') agencyMembership = m;
-            }
-          });
-
-          setWorkspaces(availableWorkspaces);
-
-          // Read localStorage synchronously to prevent Zustand hydration mismatch loops on Next.js boot
-          try {
-            const persistedData = localStorage.getItem('pyrexx-crm-storage');
-            if (persistedData) {
-              const parsed = JSON.parse(persistedData);
-              if (parsed?.state?.activeOrgId) {
-                targetOrgId = parsed.state.activeOrgId;
-              }
-            }
-          } catch (storageError) {
-            logger.error('AuthProvider', 'Failed to parse localStorage', storageError);
-          }
-
-          const isSavedOrgValid = availableWorkspaces.find(w => w.id === targetOrgId);
-
-          if (isSavedOrgValid && targetOrgId) {
-            setActiveOrgId(targetOrgId);
-            const currentMembership = memberships.find((m: any) => m.org_id === targetOrgId);
-            setUser(user.id, currentMembership?.role || 'rep');
-            logger.info('AuthProvider', 'Restored validated workspace from storage', { targetOrgId });
-          } else {
-            const fallbackOrg = agencyMembership || memberships[0];
-            const resolvedOrg = Array.isArray(fallbackOrg.organizations) 
-              ? fallbackOrg.organizations[0] 
-              : fallbackOrg.organizations;
-              
-            const fallbackType = resolvedOrg?.type || 'clinic';
-            
-            setActiveOrgId(fallbackOrg.org_id);
-            setWorkspace(fallbackType as 'agency' | 'clinic');
-            setUser(user.id, fallbackOrg.role);
-            logger.info('AuthProvider', 'Fallback workspace assigned', { orgId: fallbackOrg.org_id });
-          }
-        } else {
-          setUser(user.id, null);
-        }
-      } catch (err) {
-        logger.error('AuthProvider', 'Fatal error during bootstrap', err);
-      } finally {
-        if (isMounted) setIsBootstrapping(false);
+      if (!user) {
+        logger.info('AuthProvider', 'No active user session found.');
+        setIsBootstrapping(false);
+        return;
       }
-    };
 
+      // Fetch User Profile
+      const { data: profile } = await supabase
+        .from('users')
+        .select('full_name, email')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      const fallbackName = user.email?.split('@')[0] || "User";
+      setUserName(profile?.full_name || fallbackName);
+      setUserEmail(profile?.email || user.email || "");
+
+      // Fetch Memberships
+      const { data: memberships } = await supabase
+        .from('memberships')
+        .select('role, org_id, organizations(id, name, type)')
+        .eq('user_id', user.id);
+
+      if (memberships && memberships.length > 0) {
+        const availableWorkspaces: Workspace[] = [];
+        
+        // Read non-reactively from Zustand state to avoid reactive dependency loops
+        const currentActiveOrg = useAppStore.getState().activeOrgId;
+        const currentWorkspaceType = useAppStore.getState().currentWorkspace;
+        let targetOrgId = currentActiveOrg;
+        let agencyMembership: any = null;
+
+        memberships.forEach((m: any) => {
+          const org = Array.isArray(m.organizations) ? m.organizations[0] : m.organizations;
+          if (org) {
+            availableWorkspaces.push({ 
+              id: org.id, 
+              name: org.name, 
+              type: org.type as 'agency' | 'clinic' 
+            });
+            if (org.type === 'agency') agencyMembership = m;
+          }
+        });
+
+        setWorkspaces(availableWorkspaces);
+
+        // Check if saved Org ID is valid
+        const isSavedOrgValid = availableWorkspaces.find(w => w.id === targetOrgId);
+
+        if (isSavedOrgValid && targetOrgId) {
+          setActiveOrgId(targetOrgId);
+          const currentMembership = memberships.find((m: any) => m.org_id === targetOrgId);
+          setUser(user.id, currentMembership?.role || 'rep');
+        } else {
+          const fallbackOrg = agencyMembership || memberships[0];
+          const resolvedOrg = Array.isArray(fallbackOrg.organizations) 
+            ? fallbackOrg.organizations[0] 
+            : fallbackOrg.organizations;
+            
+          const fallbackType = resolvedOrg?.type || 'clinic';
+          
+          setActiveOrgId(fallbackOrg.org_id);
+          setWorkspace(fallbackType as 'agency' | 'clinic');
+          setUser(user.id, fallbackOrg.role);
+        }
+      } else {
+        setUser(user.id, null);
+      }
+    } catch (err) {
+      logger.error('AuthProvider', 'Fatal bootstrap error', err);
+    } finally {
+      setIsBootstrapping(false);
+    }
+  };
+
+  useEffect(() => {
     bootstrap();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_OUT') {
+    // Attach event listener for immediate post-login resolution without page reloads
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      logger.info('AuthProvider', 'Auth state transition detected', { event });
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        bootstrap(session?.user);
+      } else if (event === 'SIGNED_OUT') {
         setActiveOrgId(null);
         setUser(null, null);
         setUserName(null);
@@ -137,15 +116,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     return () => {
-      isMounted = false;
       subscription.unsubscribe();
     };
-  }, [supabase, activeOrgId, currentWorkspace, setActiveOrgId, setUser, setUserName, setUserEmail, setWorkspace, setWorkspaces, router]);
+  }, [supabase, router]);
 
   if (isBootstrapping) {
     return (
       <div className="h-screen w-full flex items-center justify-center bg-paper">
-        <div className="w-6 h-6 border-2 border-berry border-t-transparent rounded-full animate-spin"></div>
+        <div className="w-6 h-6 border-2 border-berry border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }

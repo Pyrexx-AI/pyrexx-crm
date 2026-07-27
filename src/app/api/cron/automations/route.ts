@@ -7,8 +7,6 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-const emailProvider = new ResendProvider();
-
 export async function GET(req: Request) {
   try {
     const authHeader = req.headers.get('authorization');
@@ -26,8 +24,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ message: "No active automations found." });
     }
 
-    // Fallback updated to app.pyrexxai.com
-    const emailDomain = process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "app.pyrexxai.com";
+    const emailDomain = process.env.NEXT_PUBLIC_EMAIL_DOMAIN || "crm.pyrexxai.com";
     let emailsSent = 0;
 
     for (const auto of activeAutomations) {
@@ -47,41 +44,47 @@ export async function GET(req: Request) {
         .is("last_auto_followup", null);
 
       if (staleDeals && staleDeals.length > 0) {
-        const emailPromises = staleDeals.map(async (deal) => {
-          const contact = deal.contacts as any;
-          if (!contact || !contact.email) return;
+        const emailProvider = new ResendProvider();
 
-          const fromAddress = `${orgSlug}@${emailDomain}`;
-          const content = `Hi ${contact.first_name},\n\nI wanted to float this to the top of your inbox. Did you have any questions regarding the proposal we sent over for ${deal.name}?\n\nBest,\nPyrexx Team`;
+        // FIX: Stagger emails into sequential chunks of 5 with delays to avoid 429 rate limits
+        const chunkSize = 5;
+        for (let i = 0; i < staleDeals.length; i += chunkSize) {
+          const chunk = staleDeals.slice(i, i + chunkSize);
 
-          const emailResult = await emailProvider.sendEmail({
-            to: contact.email,
-            from: fromAddress,
-            subject: "Checking in on our proposal",
-            text: content,
-          });
+          for (const deal of chunk) {
+            const contact = deal.contacts as any;
+            if (!contact || !contact.email) continue;
 
-          if (!emailResult.error) {
-            emailsSent++;
+            const fromAddress = `${orgSlug}@${emailDomain}`;
+            const content = `Hi ${contact.first_name},\n\nI wanted to float this to the top of your inbox. Did you have any questions regarding our proposal for ${deal.name}?\n\nBest,\nPyrexx Team`;
 
-            let threadId;
-            const { data: existingThread } = await supabase.from("threads").select("id").eq("org_id", orgId).eq("contact_id", deal.contact_id).single();
-            if (existingThread) {
-              threadId = existingThread.id;
-            } else {
-              const { data: newThread } = await supabase.from("threads").insert({ org_id: orgId, contact_id: deal.contact_id, channel: "email", subject: "Proposal Follow Up" }).select("id").single();
-              threadId = newThread!.id;
+            const emailResult = await emailProvider.sendEmail({
+              to: contact.email,
+              from: fromAddress,
+              subject: "Checking in on our proposal",
+              text: content,
+            });
+
+            if (!emailResult.error) {
+              emailsSent++;
+              let threadId;
+              const { data: existingThread } = await supabase.from("threads").select("id").eq("org_id", orgId).eq("contact_id", deal.contact_id).maybeSingle();
+              
+              if (existingThread) {
+                threadId = existingThread.id;
+              } else {
+                const { data: newThread } = await supabase.from("threads").insert({ org_id: orgId, contact_id: deal.contact_id, channel: "email", subject: "Proposal Follow Up" }).select("id").single();
+                threadId = newThread!.id;
+              }
+
+              await supabase.from("messages").insert({ thread_id: threadId, direction: "outbound", content });
+              await supabase.from("activities").insert({ org_id: orgId, contact_id: deal.contact_id, type: "note", content: "System triggered automated proposal follow-up email." });
+              await supabase.from("deals").update({ last_auto_followup: new Date().toISOString() }).eq("id", deal.id);
             }
-
-            await Promise.all([
-              supabase.from("messages").insert({ thread_id: threadId, direction: "outbound", content }),
-              supabase.from("activities").insert({ org_id: orgId, contact_id: deal.contact_id, type: "note", content: "System triggered automated proposal follow-up email." }),
-              supabase.from("deals").update({ last_auto_followup: new Date().toISOString() }).eq("id", deal.id)
-            ]);
           }
-        });
-
-        await Promise.allSettled(emailPromises);
+          // 250ms rate limit buffer delay between chunks
+          await new Promise(resolve => setTimeout(resolve, 250));
+        }
       }
     }
 

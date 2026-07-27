@@ -4,7 +4,8 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { ChevronLeft, Mail, Phone, CheckCircle2, Circle, Edit3, Trash2, X, Save } from "lucide-react";
+import { Input } from "@/components/ui/Input";
+import { ChevronLeft, Mail, Phone, Building2, CheckCircle2, Circle, Edit3, Trash2, X, Save, FileText } from "lucide-react";
 import { createClient } from "@/lib/supabase";
 import { useParams, useRouter } from "next/navigation";
 import { useAppStore } from "@/store/useAppStore";
@@ -19,12 +20,12 @@ export default function ContactDetailPage() {
   const [contact, setContact] = useState<any>(null);
   const [tasks, setTasks] = useState<any[]>([]);
   const [timeline, setTimeline] = useState<any[]>([]);
+  const [customFieldDefs, setCustomFieldDefinitions] = useState<any[]>([]);
   const [noteContent, setNoteContent] = useState("");
   const [isSavingNote, setIsSavingNote] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
 
   const [isEditing, setIsEditing] = useState(false);
-  const [editForm, setEditForm] = useState({ first_name: "", last_name: "", email: "", phone: "" });
+  const [editForm, setEditForm] = useState<any>({ first_name: "", last_name: "", email: "", phone: "", custom_fields: {} });
   const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   useEffect(() => {
@@ -32,7 +33,13 @@ export default function ContactDetailPage() {
   }, [activeOrgId, id]);
 
   const fetchData = async () => {
-    const { data: contactData } = await supabase.from("contacts").select("*, deals(value)").eq("id", id).single();
+    // 1. Fetch Contact scoped to activeOrgId
+    const { data: contactData } = await supabase
+      .from("contacts")
+      .select("*, deals(value)")
+      .eq("id", id)
+      .eq("org_id", activeOrgId)
+      .single();
     
     if (contactData) {
       const dealValue = contactData.deals?.reduce((sum: number, d: any) => sum + Number(d.value), 0) || 0;
@@ -41,16 +48,24 @@ export default function ContactDetailPage() {
         first_name: contactData.first_name || "",
         last_name: contactData.last_name || "",
         email: contactData.email || "",
-        phone: contactData.phone || ""
+        phone: contactData.phone || "",
+        custom_fields: contactData.custom_fields || {}
       });
     } else {
-      toast.error("Contact not found");
+      toast.error("Contact record not found.");
       router.push("/contacts");
+      return;
     }
 
+    // 2. Fetch Custom Field Definitions
+    const { data: defs } = await supabase.from("custom_field_definitions").select("*").eq("org_id", activeOrgId).eq("target_type", "contact");
+    if (defs) setCustomFieldDefinitions(defs);
+
+    // 3. Fetch Tasks
     const { data: tasksData } = await supabase.from("tasks").select("*").eq("contact_id", id).eq("is_completed", false).order("due_date", { ascending: true });
     if (tasksData) setTasks(tasksData);
 
+    // 4. Fetch Timeline
     const { data: activities } = await supabase.from("activities").select("*, users(full_name)").eq("contact_id", id);
     let mergedTimeline = (activities || []).map(a => ({
       id: a.id,
@@ -71,6 +86,7 @@ export default function ContactDetailPage() {
       last_name: editForm.last_name,
       email: editForm.email,
       phone: editForm.phone,
+      custom_fields: editForm.custom_fields,
       updated_at: new Date().toISOString()
     }).eq("id", id);
 
@@ -85,26 +101,30 @@ export default function ContactDetailPage() {
   };
 
   const handleDeleteContact = async () => {
-    if (!window.confirm("Are you sure you want to delete this contact? This will permanently delete all their deals, tasks, and history.")) return;
-    setIsDeleting(true);
-
-    // Manual cleanup prevents PostGres Foreign Key constraint errors 
-    await supabase.from("deals").delete().eq("contact_id", id);
-    await supabase.from("tasks").delete().eq("contact_id", id);
-    await supabase.from("activities").delete().eq("contact_id", id);
+    if (!window.confirm("Are you sure you want to delete this contact? All associated files, deals, and tasks will be removed.")) return;
+    
+    // FIX: Storage Leak Cleanup - Remove physical attachment files from bucket prior to database deletion
     const { data: threads } = await supabase.from("threads").select("id").eq("contact_id", id);
     if (threads && threads.length > 0) {
-        const threadIds = threads.map(t => t.id);
-        await supabase.from("messages").delete().in("thread_id", threadIds);
-        await supabase.from("threads").delete().eq("contact_id", id);
+      const threadIds = threads.map(t => t.id);
+      const { data: msgs } = await supabase.from("messages").select("attachments").in("thread_id", threadIds);
+      
+      const pathsToRemove: string[] = [];
+      msgs?.forEach(m => {
+        if (m.attachments && Array.isArray(m.attachments)) {
+          m.attachments.forEach((att: any) => { if (att.path) pathsToRemove.push(att.path); });
+        }
+      });
+
+      if (pathsToRemove.length > 0) {
+        await supabase.storage.from("attachments").remove(pathsToRemove);
+      }
     }
 
     const { error } = await supabase.from("contacts").delete().eq("id", id);
-    setIsDeleting(false);
-    if (error) {
-      toast.error("Failed to delete contact");
-    } else {
-      toast.success("Contact deleted");
+    if (error) toast.error("Failed to delete contact.");
+    else {
+      toast.success("Contact permanently deleted.");
       router.push("/contacts");
     }
   };
@@ -118,15 +138,21 @@ export default function ContactDetailPage() {
     else { toast.success("Note added"); setNoteContent(""); fetchData(); }
   };
 
-  const toggleTask = async (taskId: string) => {
+  const toggleTask = async (taskId: string, currentStatus: boolean) => {
+    // FIX: Standardized Optimistic UI update with error rollback
     setTasks(prev => prev.filter(t => t.id !== taskId)); 
-    await supabase.from("tasks").update({ is_completed: true }).eq("id", taskId);
-    toast.success("Task completed");
+    const { error } = await supabase.from("tasks").update({ is_completed: true }).eq("id", taskId);
+    if (error) {
+      toast.error("Failed to update task.");
+      fetchData(); // Rollback
+    } else {
+      toast.success("Task completed.");
+    }
   };
 
   const handleEmailClick = async () => {
     if (!activeOrgId || !contact?.id) return;
-    const { data: existingThread } = await supabase.from("threads").select("id").eq("org_id", activeOrgId).eq("contact_id", contact.id).eq("channel", "email").single();
+    const { data: existingThread } = await supabase.from("threads").select("id").eq("org_id", activeOrgId).eq("contact_id", contact.id).eq("channel", "email").maybeSingle();
     if (existingThread) {
       router.push(`/inbox?threadId=${existingThread.id}`);
     } else {
@@ -152,8 +178,8 @@ export default function ContactDetailPage() {
             <div className="flex-1">
               {isEditing ? (
                 <div className="flex gap-2 mb-2">
-                  <input value={editForm.first_name} onChange={e => setEditForm({...editForm, first_name: e.target.value})} className="font-display text-[32px] text-ink leading-tight w-full bg-paperDim border border-line rounded px-2 outline-none focus:border-berry" placeholder="First Name" />
-                  <input value={editForm.last_name} onChange={e => setEditForm({...editForm, last_name: e.target.value})} className="font-display text-[32px] text-ink leading-tight w-full bg-paperDim border border-line rounded px-2 outline-none focus:border-berry" placeholder="Last Name" />
+                  <input value={editForm.first_name} onChange={e => setEditForm({...editForm, first_name: e.target.value})} className="font-display text-[28px] text-ink leading-tight w-full bg-paperDim border border-line rounded px-2 outline-none focus:border-berry" />
+                  <input value={editForm.last_name} onChange={e => setEditForm({...editForm, last_name: e.target.value})} className="font-display text-[28px] text-ink leading-tight w-full bg-paperDim border border-line rounded px-2 outline-none focus:border-berry" />
                 </div>
               ) : (
                 <h1 className="font-display text-[32px] text-ink leading-tight">{contact.first_name} {contact.last_name}</h1>
@@ -173,9 +199,9 @@ export default function ContactDetailPage() {
               </>
             ) : (
               <>
-                {(userRole === 'owner' || userRole === 'manager') && (
-                  <button onClick={handleDeleteContact} disabled={isDeleting} className="p-2 text-slate hover:text-berry transition-colors rounded-lg hover:bg-berrySoft/50 disabled:opacity-50" title="Delete Contact">
-                    {isDeleting ? <div className="w-4 h-4 border-2 border-slate border-t-transparent rounded-full animate-spin" /> : <Trash2 size={18} />}
+                {['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '') && (
+                  <button onClick={handleDeleteContact} className="p-2 text-slate hover:text-berry transition-colors rounded-lg hover:bg-berrySoft/50" title="Delete Contact">
+                    <Trash2 size={18} />
                   </button>
                 )}
                 <Button variant="outline" icon={Edit3} onClick={() => setIsEditing(true)}>Edit</Button>
@@ -194,23 +220,43 @@ export default function ContactDetailPage() {
                 <div className="flex justify-between items-center text-sm">
                   <span className="text-slate font-body">Email</span>
                   {isEditing ? (
-                    <input value={editForm.email} onChange={e => setEditForm({...editForm, email: e.target.value})} className="bg-paperDim border border-line rounded px-2 py-1 outline-none focus:border-berry text-right w-2/3" />
-                  ) : (
-                    <span className="text-ink font-body font-medium">{contact.email || "—"}</span>
-                  )}
+                    <input value={editForm.email} onChange={e => setEditForm({...editForm, email: e.target.value})} className="bg-paperDim border border-line rounded px-2 py-1 outline-none text-right w-2/3" />
+                  ) : <span className="text-ink font-body font-medium">{contact.email || "—"}</span>}
                 </div>
                 <div className="flex justify-between items-center text-sm">
                   <span className="text-slate font-body">Phone</span>
                   {isEditing ? (
-                    <input value={editForm.phone} onChange={e => setEditForm({...editForm, phone: e.target.value})} className="bg-paperDim border border-line rounded px-2 py-1 outline-none focus:border-berry text-right font-mono w-2/3" />
-                  ) : (
-                    <span className="text-ink font-mono font-medium">{contact.phone || "—"}</span>
-                  )}
+                    <input value={editForm.phone} onChange={e => setEditForm({...editForm, phone: e.target.value})} className="bg-paperDim border border-line rounded px-2 py-1 outline-none text-right font-mono w-2/3" />
+                  ) : <span className="text-ink font-mono font-medium">{contact.phone || "—"}</span>}
                 </div>
                 <div className="flex justify-between items-center text-sm">
-                  <span className="text-slate font-body">Total Pipeline Value</span>
+                  <span className="text-slate font-body">Pipeline Value</span>
                   <span className="text-ink font-mono font-medium text-sage">${contact.total_value.toLocaleString()}</span>
                 </div>
+
+                {/* FIX: Render Dynamic Custom Fields */}
+                {customFieldDefs.length > 0 && (
+                  <div className="border-t border-line/60 pt-3 mt-3 space-y-2">
+                    <div className="text-xs uppercase text-slate tracking-wide font-body font-semibold">Custom Profile Fields</div>
+                    {customFieldDefs.map(def => (
+                      <div key={def.id} className="flex justify-between items-center text-sm">
+                        <span className="text-slate font-body">{def.name}</span>
+                        {isEditing ? (
+                          <input 
+                            value={editForm.custom_fields[def.key] || ""} 
+                            onChange={e => setEditForm({
+                              ...editForm, 
+                              custom_fields: { ...editForm.custom_fields, [def.key]: e.target.value }
+                            })} 
+                            className="bg-paperDim border border-line rounded px-2 py-1 outline-none text-right text-xs w-2/3" 
+                          />
+                        ) : (
+                          <span className="text-ink font-body font-medium">{contact.custom_fields?.[def.key] || "—"}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -222,7 +268,7 @@ export default function ContactDetailPage() {
                 <div className="space-y-3">
                   {tasks.map(t => (
                     <div key={t.id} className="flex items-start gap-2.5">
-                      <button onClick={() => toggleTask(t.id)} className="mt-0.5 text-slate hover:text-sage transition-colors"><Circle size={15} /></button>
+                      <button onClick={() => toggleTask(t.id, t.is_completed)} className="mt-0.5 text-slate hover:text-sage transition-colors"><Circle size={15} /></button>
                       <div>
                         <div className="text-sm text-ink font-body font-medium leading-tight">{t.title}</div>
                         <div className="text-[10px] text-berry font-mono mt-0.5">Due: {new Date(t.due_date).toLocaleDateString()}</div>

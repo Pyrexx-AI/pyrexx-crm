@@ -18,7 +18,8 @@ export default function AccountsPage() {
 
   const fetchAccounts = async () => {
     if (!activeOrgId) return;
-
+    
+    // FIX: Explicitly scope clinic accounts by parent_org_id
     const { data, error } = await supabase
       .from("organizations")
       .select("*")
@@ -35,7 +36,7 @@ export default function AccountsPage() {
 
   return (
     <AppLayout>
-      <div className="p-4 md:p-8 max-w-5xl mx-auto">
+      <div className="p-4 md:p-8 max-w-5xl mx-auto flex-1 w-full">
         <SectionTitle 
           eyebrow="Agency Workspace · Owner"
           title="Sub-accounts" 
@@ -59,7 +60,6 @@ export default function AccountsPage() {
               {accounts.map((a) => (
                 <tr key={a.id} className="border-b border-line hover:bg-paperDim/50 transition-colors">
                   <td className="px-5 py-3 font-medium text-ink">{a.name}</td>
-                  {/* Visual fix for email display domain */}
                   <td className="px-5 py-3 text-slate font-mono">{a.email_local_part}@app.pyrexxai.com</td>
                   <td className="px-5 py-3 text-slate">{a.plan}</td>
                   <td className="px-5 py-3">

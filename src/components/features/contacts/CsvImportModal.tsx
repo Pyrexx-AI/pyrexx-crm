@@ -3,10 +3,11 @@ import React, { useState } from "react";
 import Papa from "papaparse";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
-import { Upload, AlertCircle, ArrowRight, CheckCircle2, Plus } from "lucide-react";
+import { Upload, ArrowRight, CheckCircle2, Plus } from "lucide-react";
 import { createClient } from "@/lib/supabase";
 import { useAppStore } from "@/store/useAppStore";
 import { toast } from "sonner";
+import { slugifyFieldKey } from "@/lib/utils";
 
 type Step = "UPLOAD" | "MAP" | "IMPORTING";
 
@@ -30,6 +31,7 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
   const [headers, setHeaders] = useState<string[]>([]);
   const [fieldMap, setFieldMap] = useState<Record<string, string>>({});
   const [customFields, setCustomFields] = useState<any[]>([]);
+  const [progress, setProgress] = useState({ current: 0, total: 0 });
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -37,7 +39,12 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
     
     setFile(selectedFile);
 
-    const { data: extFields } = await supabase.from("custom_field_definitions").select("key, name").eq("org_id", activeOrgId).eq("target_type", "contact");
+    const { data: extFields } = await supabase
+      .from("custom_field_definitions")
+      .select("key, name")
+      .eq("org_id", activeOrgId)
+      .eq("target_type", "contact");
+      
     setCustomFields(extFields || []);
 
     Papa.parse(selectedFile, {
@@ -51,19 +58,19 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
           
           const initialMap: Record<string, string> = {};
           extractedHeaders.forEach(h => {
-            const cleanHeader = h.toLowerCase().replace(/[\s_-]/g, "");
+            const cleanHeader = slugifyFieldKey(h);
             
-            if (["firstname", "fname", "first", "givenname"].includes(cleanHeader)) {
+            if (["firstname", "fname", "first"].includes(cleanHeader)) {
               initialMap[h] = "first_name";
-            } else if (["lastname", "lname", "last", "surname"].includes(cleanHeader)) {
+            } else if (["lastname", "lname", "last"].includes(cleanHeader)) {
               initialMap[h] = "last_name";
             } else if (["fullname", "name", "contactname"].includes(cleanHeader)) {
               initialMap[h] = "full_name";
-            } else if (["email", "mail", "emailaddress"].includes(cleanHeader)) {
+            } else if (["email", "mail"].includes(cleanHeader)) {
               initialMap[h] = "email";
-            } else if (["phone", "mobile", "cell", "tel", "number", "phonenumber"].includes(cleanHeader)) {
+            } else if (["phone", "mobile", "cell", "tel", "number"].includes(cleanHeader)) {
               initialMap[h] = "phone";
-            } else if (["title", "position", "jobtitle", "role"].includes(cleanHeader)) {
+            } else if (["title", "position", "role"].includes(cleanHeader)) {
               initialMap[h] = "position";
             } else if (["stage", "dealstage"].includes(cleanHeader)) {
               initialMap[h] = "stage";
@@ -80,7 +87,7 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
 
   const createCustomFieldOnTheFly = async (headerName: string) => {
     if (!activeOrgId) return;
-    const cleanKey = headerName.toLowerCase().replace(/[\s-]/g, "_");
+    const cleanKey = slugifyFieldKey(headerName);
 
     const { data: newDef, error } = await supabase.from("custom_field_definitions").insert({
       org_id: activeOrgId,
@@ -101,6 +108,7 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
   const executeImport = async () => {
     if (!activeOrgId) return;
     setStep("IMPORTING");
+    setProgress({ current: 0, total: csvData.length });
 
     const payload = csvData.map((row) => {
       const contactRecord: any = {
@@ -119,8 +127,7 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
           const customKey = target.replace("custom:", "");
           contactRecord.custom_fields[customKey] = value;
         } else if (target === "full_name" && value) {
-          // Robust null check before string splits
-          const nameParts = value?.toString().trim().split(/\s+/) || [];
+          const nameParts = value.trim().split(/\s+/);
           contactRecord.first_name = nameParts[0] || "Unknown";
           contactRecord.last_name = nameParts.slice(1).join(" ") || "Contact";
         } else {
@@ -140,8 +147,14 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
 
     for (let i = 0; i < payload.length; i += chunkSize) {
       const chunk = payload.slice(i, i + chunkSize);
-      const { error } = await supabase.from("contacts").insert(chunk);
+      
+      // FIX: Use upsert with ignoreDuplicates to prevent 1 row from failing the whole chunk
+      const { error } = await supabase
+        .from("contacts")
+        .upsert(chunk, { onConflict: 'org_id, email', ignoreDuplicates: true });
+        
       if (error) errorCount++;
+      setProgress({ current: Math.min(i + chunkSize, payload.length), total: payload.length });
     }
 
     if (errorCount > 0) {
@@ -160,11 +173,12 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
 
   return (
     <Modal isOpen={isOpen} onClose={() => { if(step !== "IMPORTING") onClose(); }} title="Smart Import Wizard">
+      
       {step === "UPLOAD" && (
         <div className="flex flex-col items-center justify-center border-2 border-dashed border-line rounded-xl p-8 bg-paperDim text-center">
           <Upload size={32} className="text-slate mb-3" />
           <p className="text-sm text-ink font-medium mb-1">Select your client/lead CSV list</p>
-          <p className="text-xs text-slate mb-4">The engine will auto-suggest matches and split full names.</p>
+          <p className="text-xs text-slate mb-4 font-body">Auto-matches columns and splits full names.</p>
           <input 
             type="file" 
             accept=".csv"
@@ -175,7 +189,7 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
       )}
 
       {step === "MAP" && (
-        <div className="flex flex-col max-h-[60vh]">
+        <div className="flex flex-col max-h-[60dvh]">
           <div className="mb-4 p-3 rounded-lg bg-sageSoft text-sage font-medium text-sm flex items-center gap-2">
             <CheckCircle2 size={16} /> Decoded {csvData.length} records. Confirm the matched fields below:
           </div>
@@ -227,7 +241,7 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
 
           <div className="flex justify-end gap-3 pt-4 border-t border-line mt-4">
             <Button type="button" variant="ghost" onClick={() => setStep("UPLOAD")}>Back</Button>
-            <Button onClick={executeImport}>Run Import & Split Names</Button>
+            <Button onClick={executeImport}>Run Import</Button>
           </div>
         </div>
       )}
@@ -235,8 +249,9 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
       {step === "IMPORTING" && (
         <div className="flex flex-col items-center justify-center p-8 text-center">
           <div className="w-8 h-8 border-4 border-berry border-t-transparent rounded-full animate-spin mb-4" />
-          <h3 className="text-lg font-medium text-ink font-body">Importing {csvData.length} contacts...</h3>
-          <p className="text-sm text-slate mt-2">Processing CSV rows and saving data safely.</p>
+          <h3 className="text-lg font-medium text-ink font-body">Importing Data...</h3>
+          <p className="text-sm text-slate mt-2 font-mono">{progress.current} / {progress.total} contacts saved.</p>
+          <p className="text-xs text-slate mt-4 italic">Please do not close this window.</p>
         </div>
       )}
     </Modal>

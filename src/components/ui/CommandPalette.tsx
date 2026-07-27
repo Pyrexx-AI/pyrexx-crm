@@ -65,7 +65,7 @@ export function CommandPalette() {
       if (deals) {
         const mappedDeals = deals.map(d => ({
           type: "Deal", 
-          id: "pipeline", 
+          id: d.id, // Passes real Deal ID
           title: d.name, 
           subtitle: `Stage: ${d.stage}`
         }));
@@ -103,7 +103,7 @@ export function CommandPalette() {
     setCommandPaletteOpen(false);
     setQuery("");
     if (result.type === "Contact") router.push(`/contacts/${result.id}`);
-    if (result.type === "Deal") router.push(`/pipeline`);
+    if (result.type === "Deal") router.push(`/pipeline?dealId=${result.id}`); // FIX: Deep links to deal
     if (result.type === "Account") router.push(`/accounts`);
   };
 
@@ -125,7 +125,7 @@ export function CommandPalette() {
             <X size={16} />
           </button>
         </div>
-        <div className="max-h-[60vh] overflow-y-auto p-2">
+        <div className="max-h-[60dvh] overflow-y-auto p-2">
           {query.trim() === "" ? (
             <div className="p-8 text-center text-sm text-slate font-body">Start typing to search globally...</div>
           ) : results.length > 0 ? (
