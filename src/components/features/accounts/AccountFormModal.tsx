@@ -7,6 +7,7 @@ import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { createClient } from "@/lib/supabase";
+import { useAppStore } from "@/store/useAppStore";
 import { toast } from "sonner";
 
 const accountSchema = z.object({
@@ -18,6 +19,7 @@ type AccountFormValues = z.infer<typeof accountSchema>;
 
 export function AccountFormModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; onClose: () => void, onSuccess: () => void }) {
   const supabase = createClient();
+  const { activeOrgId } = useAppStore(); // Parent Agency ID
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const { register, handleSubmit, formState: { errors }, reset, watch, setValue } = useForm<AccountFormValues>({
@@ -40,12 +42,19 @@ export function AccountFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
   const slugValue = watch("slug");
 
   const onSubmit = async (data: AccountFormValues) => {
+    if (!activeOrgId) {
+      toast.error("Active organization session missing.");
+      return;
+    }
+    
     setIsSubmitting(true);
     
-    const { data: orgId, error } = await supabase.rpc("create_sub_account", {
+    // Pass the activeOrgId as the parent_org_id to link the new clinic workspace securely
+    const { error } = await supabase.rpc("create_sub_account", {
       p_name: data.name,
       p_slug: data.slug,
-      p_email_local_part: data.slug 
+      p_email_local_part: data.slug,
+      p_parent_org_id: activeOrgId // <-- Plugs the data leak
     });
 
     setIsSubmitting(false);
@@ -80,7 +89,6 @@ export function AccountFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
         <div className="p-3 rounded-lg bg-paperDim border border-line text-xs font-body text-slate flex flex-col gap-1">
           <p>This will provision an isolated workspace and inbox.</p>
           <p>
-            {/* Visual fix for email display domain */}
             Inbound Routing: <span className="font-mono font-medium text-ink">{slugValue || "slug"}@app.pyrexxai.com</span>
           </p>
         </div>

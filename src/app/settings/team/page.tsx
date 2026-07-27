@@ -24,6 +24,11 @@ export default function TeamSettingsPage() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("rep");
   const [isInviting, setIsInviting] = useState(false);
+  
+  const [isMounted, setIsMounted] = useState(false);
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   const fetchTeam = async () => {
     if (!activeOrgId) return;
@@ -54,7 +59,6 @@ export default function TeamSettingsPage() {
     if (!inviteEmail || !activeOrgId) return;
     
     setIsInviting(true);
-    // Preserved the secure backend integration
     const res = await fetch("/api/team/invite", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -76,7 +80,12 @@ export default function TeamSettingsPage() {
   };
 
   const handleRoleChange = async (targetUserId: string, newRole: string) => {
-    const { error } = await supabase.from("memberships").update({ role: newRole }).eq("user_id", targetUserId).eq("org_id", activeOrgId);
+    const { error } = await supabase
+      .from("memberships")
+      .update({ role: newRole })
+      .eq("user_id", targetUserId)
+      .eq("org_id", activeOrgId);
+
     if (error) {
       logger.error('TeamSettingsPage', 'Role update error', error);
       toast.error("Failed to update role");
@@ -87,8 +96,19 @@ export default function TeamSettingsPage() {
   };
 
   const handleRemoveMember = async (targetUserId: string) => {
+    if (targetUserId === userId) {
+      toast.error("You cannot revoke your own access from this settings page.");
+      return;
+    }
+
     if (!window.confirm("Are you sure you want to revoke this user's access?")) return;
-    const { error } = await supabase.from("memberships").delete().eq("user_id", targetUserId).eq("org_id", activeOrgId);
+    
+    const { error } = await supabase
+      .from("memberships")
+      .delete()
+      .eq("user_id", targetUserId)
+      .eq("org_id", activeOrgId);
+
     if (error) {
       logger.error('TeamSettingsPage', 'Remove member error', error);
       toast.error("Failed to remove member");
@@ -98,8 +118,7 @@ export default function TeamSettingsPage() {
     }
   };
 
-  // RESTORED: Standard logic from the summary
-  const isManager = userRole === 'owner' || userRole === 'manager';
+  const isManager = ['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '');
 
   return (
     <AppLayout>
@@ -108,12 +127,13 @@ export default function TeamSettingsPage() {
           eyebrow="Settings"
           title="Team Management" 
           action={
-            isManager ? (
+            isMounted && isManager ? (
               <Button icon={UserPlus} onClick={() => setIsInviteOpen(true)}>Invite Member</Button>
             ) : null
           }
         />
 
+        {/* Desktop Table */}
         <div className="hidden md:block rounded-xl overflow-x-auto border border-line bg-white shadow-card">
           <table className="w-full text-sm font-body min-w-[600px]">
             <thead className="bg-paperDim border-b border-line">
@@ -143,7 +163,7 @@ export default function TeamSettingsPage() {
                       </div>
                     </td>
                     <td className="px-5 py-3">
-                      {isManager && !isSelf ? (
+                      {isMounted && isManager && !isSelf ? (
                         <select value={m.role} onChange={(e) => handleRoleChange(targetId, e.target.value)} className="px-2 py-1 bg-paperDim border border-transparent rounded outline-none focus:border-berry text-xs uppercase font-medium text-ink cursor-pointer hover:bg-[#E0DFDA] transition-colors">
                           <option value="rep">REP</option>
                           <option value="manager">MANAGER</option>
@@ -155,12 +175,12 @@ export default function TeamSettingsPage() {
                       )}
                     </td>
                     <td className="px-5 py-3">
-                      <Badge variant={m.status === 'active' || !m.status ? 'sage' : 'amber'}>
-                        {m.status ? m.status.toUpperCase() : 'ACTIVE'}
+                      <Badge variant={m.status === 'active' ? 'sage' : 'amber'}>
+                        {m.status?.toUpperCase() || 'ACTIVE'}
                       </Badge>
                     </td>
                     <td className="px-5 py-3 text-right">
-                      {isManager && !isSelf && (
+                      {isMounted && isManager && !isSelf && (
                         <button onClick={() => handleRemoveMember(targetId)} className="p-2 text-slate hover:text-berry opacity-0 group-hover:opacity-100 transition-all rounded-lg hover:bg-berrySoft/50" title="Revoke Access">
                           <Trash2 size={16} />
                         </button>
@@ -173,6 +193,7 @@ export default function TeamSettingsPage() {
           </table>
         </div>
 
+        {/* Mobile Stacked Cards */}
         <div className="md:hidden space-y-3">
           {members.map((m) => {
             const targetId = m.users?.id;
@@ -190,7 +211,7 @@ export default function TeamSettingsPage() {
                   </div>
                 </div>
                 <div className="flex items-center justify-between pt-3 border-t border-line">
-                  {isManager && !isSelf ? (
+                  {isMounted && isManager && !isSelf ? (
                     <select value={m.role} onChange={(e) => handleRoleChange(targetId, e.target.value)} className="px-2 py-1 bg-paperDim rounded text-xs uppercase font-medium text-ink outline-none">
                       <option value="rep">REP</option>
                       <option value="manager">MANAGER</option>
@@ -199,11 +220,11 @@ export default function TeamSettingsPage() {
                     </select>
                   ) : <span className="px-2 py-1 rounded text-xs uppercase font-medium bg-paperDim text-slate">{m.role}</span>}
                   
-                  <Badge variant={m.status === 'active' || !m.status ? 'sage' : 'amber'}>
-                    {m.status ? m.status.toUpperCase() : 'ACTIVE'}
+                  <Badge variant={m.status === 'active' ? 'sage' : 'amber'}>
+                    {m.status?.toUpperCase() || 'ACTIVE'}
                   </Badge>
 
-                  {isManager && !isSelf && (
+                  {isMounted && isManager && !isSelf && (
                     <button onClick={() => handleRemoveMember(targetId)} className="text-berry text-xs font-medium px-2 py-1 rounded hover:bg-berrySoft/50">
                       Revoke
                     </button>
