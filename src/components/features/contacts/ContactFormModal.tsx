@@ -10,8 +10,8 @@ import { createClient } from "@/lib/supabase";
 import { useAppStore } from "@/store/useAppStore";
 import { toast } from "sonner";
 import { ChevronDown, ChevronUp, Plus, Search } from "lucide-react";
+import { slugifyFieldKey } from "@/lib/utils";
 
-// Standard Schema: Enforces at least email OR phone
 const contactSchema = z.object({
   first_name: z.string().min(1, "First name is required"),
   last_name: z.string().min(1, "Last name is required"),
@@ -26,7 +26,7 @@ const contactSchema = z.object({
   social_linkedin: z.string().optional(),
   social_twitter: z.string().optional(),
 }).refine(data => data.email || data.phone, {
-  message: "You must provide at least an Email or Phone Number.",
+  message: "Provide at least an Email or Phone Number.",
   path: ["email"]
 });
 
@@ -37,15 +37,14 @@ export function ContactFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
   const { activeOrgId } = useAppStore();
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Sections collapsing
   const [showContactDetails, setShowContactDetails] = useState(false);
   const [showClinicDetails, setShowClinicDetails] = useState(false);
 
-  // Dynamic Custom Fields State
-  const [customFieldDefinitions, setCustomFieldDefinitions] = useState<any[]>([]);
-  const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({});
+  const [personDefs, setPersonDefs] = useState<any[]>([]);
+  const [companyDefs, setCompanyDefs] = useState<any[]>([]);
+  const [personCustomValues, setPersonCustomValues] = useState<Record<string, string>>({});
+  const [companyCustomValues, setCompanyCustomValues] = useState<Record<string, string>>({});
   
-  // Clinic Auto-Suggest & Prefill
   const [clinicQuery, setClinicQuery] = useState("");
   const [clinicSuggestions, setClinicSuggestions] = useState<any[]>([]);
   const [selectedClinic, setSelectedClinic] = useState<any | null>(null);
@@ -60,21 +59,21 @@ export function ContactFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
 
   const fetchDefinitions = async () => {
     if (!activeOrgId) return;
-    const { data } = await supabase
+    const { data: defs } = await supabase
       .from("custom_field_definitions")
       .select("*")
-      .eq("org_id", activeOrgId)
-      .eq("target_type", "contact");
-    if (data) setCustomFieldDefinitions(data);
+      .eq("org_id", activeOrgId);
+
+    if (defs) {
+      setPersonDefs(defs.filter(d => d.target_type === 'contact'));
+      setCompanyDefs(defs.filter(d => d.target_type === 'company'));
+    }
   };
 
   useEffect(() => {
-    if (isOpen && activeOrgId) {
-      fetchDefinitions();
-    }
+    if (isOpen && activeOrgId) fetchDefinitions();
   }, [isOpen, activeOrgId]);
 
-  // Click outside auto-suggest closer
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
       if (suggestRef.current && !suggestRef.current.contains(e.target as Node)) {
@@ -85,7 +84,6 @@ export function ContactFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  // Search Clinic suggestions
   const handleClinicSearch = async (val: string) => {
     setClinicQuery(val);
     setSelectedClinic(null);
@@ -117,27 +115,29 @@ export function ContactFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
       address_zip: clinic.address_zip || "",
       social_linkedin: clinic.socials?.linkedin || ""
     });
+    setCompanyCustomValues(clinic.custom_fields || {});
     setShowSuggestions(false);
-    setShowClinicDetails(true); // Open section to show prefilled data
+    setShowClinicDetails(true);
   };
 
-  const handleAddCustomField = async () => {
-    const name = window.prompt("Enter Custom Field Name (e.g. TikTok Profile):");
+  const handleAddCustomField = async (targetType: "contact" | "company") => {
+    const label = targetType === "contact" ? "Person Profile" : "Company Profile";
+    const name = window.prompt(`Enter New ${label} Field Name:`);
     if (!name || !activeOrgId) return;
 
-    const key = name.toLowerCase().replace(/[\s-]/g, "_");
+    const key = slugifyFieldKey(name);
 
-    const { error } = await supabase.from("custom_field_definitions").insert({
+    const { error } = await supabase.from("custom_field_definitions").upsert({
       org_id: activeOrgId,
-      target_type: "contact",
+      target_type: targetType,
       name,
       key
-    });
+    }, { onConflict: 'org_id, target_type, key' });
 
     if (error) {
-      toast.error("Field already exists or failed to define.");
+      toast.error("Failed to add field.");
     } else {
-      toast.success(`Custom field '${name}' added successfully.`);
+      toast.success(`Added '${name}' custom field.`);
       fetchDefinitions();
     }
   };
@@ -149,32 +149,42 @@ export function ContactFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
     try {
       let companyId = selectedClinic?.id || null;
 
-      // 1. If a new Clinic was typed but doesn't exist, create it first
-      if (clinicQuery.trim() !== "" && !selectedClinic) {
-        const { data: newCompany, error: compError } = await supabase
+      // 1. Data Pooling for Clinic
+      if (clinicQuery.trim() !== "") {
+        const { data: existingCompany } = await supabase
           .from("companies")
-          .insert({
-            org_id: activeOrgId,
-            name: clinicQuery,
-            phone: clinicForm.phone,
-            website: clinicForm.website,
-            address_street: clinicForm.address_street,
-            address_city: clinicForm.address_city,
-            address_state: clinicForm.address_state,
-            address_zip: clinicForm.address_zip,
-            socials: { linkedin: clinicForm.social_linkedin }
-          })
-          .select("id")
-          .single();
+          .select("id, custom_fields, socials")
+          .eq("org_id", activeOrgId)
+          .ilike("name", clinicQuery.trim())
+          .maybeSingle();
 
-        if (!compError && newCompany) {
-          companyId = newCompany.id;
+        if (existingCompany) {
+          companyId = existingCompany.id;
+          // Merge custom fields on company
+          const mergedFields = { ...(existingCompany.custom_fields || {}), ...companyCustomValues };
+          await supabase.from("companies").update({
+            custom_fields: mergedFields
+          }).eq("id", companyId);
+        } else {
+          // Create new company
+          const { data: newCompany } = await supabase.from("companies").insert({
+            org_id: activeOrgId,
+            name: clinicQuery.trim(),
+            phone: clinicForm.phone || null,
+            website: clinicForm.website || null,
+            address_street: clinicForm.address_street || null,
+            address_city: clinicForm.address_city || null,
+            address_state: clinicForm.address_state || null,
+            address_zip: clinicForm.address_zip || null,
+            socials: { linkedin: clinicForm.social_linkedin },
+            custom_fields: companyCustomValues
+          }).select("id").single();
+
+          if (newCompany) companyId = newCompany.id;
         }
       }
 
-      // 2. Insert Contact with associated companyId and custom fields JSON payload
-      const socialsObj = { linkedin: data.social_linkedin, twitter: data.social_twitter };
-
+      // 2. Create Contact
       const { error: contactError } = await supabase.from("contacts").insert({
         org_id: activeOrgId,
         company_id: companyId,
@@ -182,24 +192,24 @@ export function ContactFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
         last_name: data.last_name,
         email: data.email || null,
         phone: data.phone || null,
-        position: data.position,
-        secondary_phone: data.secondary_phone,
-        address_street: data.address_street,
-        address_city: data.address_city,
-        address_state: data.address_state,
-        address_zip: data.address_zip,
-        socials: socialsObj,
-        custom_fields: customFieldValues
+        position: data.position || null,
+        secondary_phone: data.secondary_phone || null,
+        address_street: data.address_street || null,
+        address_city: data.address_city || null,
+        address_state: data.address_state || null,
+        address_zip: data.address_zip || null,
+        socials: { linkedin: data.social_linkedin, twitter: data.social_twitter },
+        custom_fields: personCustomValues
       });
 
-      if (contactError) {
-        toast.error("Failed to save contact.");
-      } else {
-        toast.success("Contact saved successfully.");
+      if (contactError) toast.error("Failed to save contact.");
+      else {
+        toast.success("Contact record created.");
         reset();
         setClinicQuery("");
         setSelectedClinic(null);
-        setCustomFieldValues({});
+        setPersonCustomValues({});
+        setCompanyCustomValues({});
         onSuccess();
         onClose();
       }
@@ -211,20 +221,18 @@ export function ContactFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="New Contact">
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4 max-h-[75vh] overflow-y-auto pr-2">
+    <Modal isOpen={isOpen} onClose={onClose} title="New Contact Record">
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4 max-h-[75dvh] overflow-y-auto pr-2">
         
-        {/* SECTION 1: Core Fields (Always Visible) */}
         <div className="grid grid-cols-2 gap-4">
           <Input label="First Name" {...register("first_name")} error={errors.first_name?.message} />
           <Input label="Last Name" {...register("last_name")} error={errors.last_name?.message} />
         </div>
 
-        {/* Dynamic Clinic Field with Suggestions */}
         <div className="relative" ref={suggestRef}>
           <Input 
             label="Clinic / Company Name" 
-            placeholder="Type clinic to search or create new..."
+            placeholder="Search existing or type new clinic..."
             value={clinicQuery}
             onChange={(e) => handleClinicSearch(e.target.value)}
           />
@@ -250,25 +258,25 @@ export function ContactFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
 
         <div className="grid grid-cols-2 gap-4">
           <Input label="Primary Email" type="email" {...register("email")} error={errors.email?.message} />
-          <Input label="Primary Phone" type="tel" {...register("phone")} error={errors.phone?.message} />
+          <Input label="Mobile Phone" type="tel" {...register("phone")} error={errors.phone?.message} />
         </div>
 
-        {/* SECTION 2: Collapsible Additional Contact Details */}
+        {/* SECTION 2: Person Additional Info */}
         <div className="border-t border-line pt-3">
           <button
             type="button"
             onClick={() => setShowContactDetails(!showContactDetails)}
             className="w-full flex items-center justify-between text-xs uppercase tracking-wide text-slate font-medium font-body"
           >
-            <span>Additional Contact Details</span>
+            <span>Additional Person Info</span>
             {showContactDetails ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
           
           {showContactDetails && (
             <div className="space-y-4 mt-3">
               <div className="grid grid-cols-2 gap-4">
-                <Input label="Position/Job Title" placeholder="e.g. Head Dermatologist" {...register("position")} />
-                <Input label="Secondary Phone" type="tel" {...register("secondary_phone")} />
+                <Input label="Position / Role" placeholder="e.g. Lead Doctor" {...register("position")} />
+                <Input label="Work Line / Secondary Phone" type="tel" {...register("secondary_phone")} />
               </div>
               <Input label="Street Address" {...register("address_street")} />
               <div className="grid grid-cols-3 gap-3">
@@ -277,20 +285,19 @@ export function ContactFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
                 <Input label="Zip" {...register("address_zip")} />
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <Input label="LinkedIn URL" placeholder="linkedin.com/in/..." {...register("social_linkedin")} />
-                <Input label="Twitter/X URL" placeholder="twitter.com/..." {...register("social_twitter")} />
+                <Input label="LinkedIn Profile" placeholder="linkedin.com/in/..." {...register("social_linkedin")} />
+                <Input label="Twitter/X" placeholder="x.com/..." {...register("social_twitter")} />
               </div>
 
-              {/* Render Contact Custom Fields */}
-              {customFieldDefinitions.length > 0 && (
+              {personDefs.length > 0 && (
                 <div className="border-t border-line/50 pt-3 space-y-3">
-                  <span className="text-xs text-slate font-semibold font-body">Custom Profile Fields</span>
-                  {customFieldDefinitions.map(def => (
+                  <span className="text-xs text-slate font-semibold font-body">Person Custom Fields</span>
+                  {personDefs.map(def => (
                     <Input 
                       key={def.id} 
                       label={def.name} 
-                      value={customFieldValues[def.key] || ""} 
-                      onChange={(e) => setCustomFieldValues({...customFieldValues, [def.key]: e.target.value})} 
+                      value={personCustomValues[def.key] || ""} 
+                      onChange={(e) => setPersonCustomValues({...personCustomValues, [def.key]: e.target.value})} 
                     />
                   ))}
                 </div>
@@ -298,80 +305,60 @@ export function ContactFormModal({ isOpen, onClose, onSuccess }: { isOpen: boole
 
               <button
                 type="button"
-                onClick={handleAddCustomField}
+                onClick={() => handleAddCustomField("contact")}
                 className="text-berry text-xs font-semibold flex items-center gap-1 hover:underline mt-2"
               >
-                <Plus size={14} /> Add Custom Profile Field
+                <Plus size={14} /> Add Person Custom Field
               </button>
             </div>
           )}
         </div>
 
-        {/* SECTION 3: Collapsible Clinic Details */}
+        {/* SECTION 3: Company Additional Info */}
         <div className="border-t border-line pt-3">
           <button
             type="button"
             onClick={() => setShowClinicDetails(!showClinicDetails)}
             className="w-full flex items-center justify-between text-xs uppercase tracking-wide text-slate font-medium font-body"
           >
-            <span>Clinic / Business Info</span>
+            <span>Additional Clinic Info</span>
             {showClinicDetails ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
           
           {showClinicDetails && (
             <div className="space-y-4 mt-3">
               <div className="grid grid-cols-2 gap-4">
-                <Input 
-                  label="Office Phone Line" 
-                  value={clinicForm.phone} 
-                  onChange={(e) => setClinicForm({...clinicForm, phone: e.target.value})} 
-                  disabled={!!selectedClinic}
-                />
-                <Input 
-                  label="Clinic Website" 
-                  placeholder="https://..."
-                  value={clinicForm.website} 
-                  onChange={(e) => setClinicForm({...clinicForm, website: e.target.value})} 
-                  disabled={!!selectedClinic}
-                />
+                <Input label="Office Line" value={clinicForm.phone} onChange={(e) => setClinicForm({...clinicForm, phone: e.target.value})} disabled={!!selectedClinic} />
+                <Input label="Clinic Website" placeholder="https://..." value={clinicForm.website} onChange={(e) => setClinicForm({...clinicForm, website: e.target.value})} disabled={!!selectedClinic} />
               </div>
-              <Input 
-                label="Clinic Street Address" 
-                value={clinicForm.address_street} 
-                onChange={(e) => setClinicForm({...clinicForm, address_street: e.target.value})} 
-                disabled={!!selectedClinic}
-              />
+              <Input label="Clinic Address" value={clinicForm.address_street} onChange={(e) => setClinicForm({...clinicForm, address_street: e.target.value})} disabled={!!selectedClinic} />
               <div className="grid grid-cols-3 gap-3">
-                <Input 
-                  label="Clinic City" 
-                  value={clinicForm.address_city} 
-                  onChange={(e) => setClinicForm({...clinicForm, address_city: e.target.value})} 
-                  disabled={!!selectedClinic}
-                />
-                <Input 
-                  label="Clinic State" 
-                  value={clinicForm.address_state} 
-                  onChange={(e) => setClinicForm({...clinicForm, address_state: e.target.value})} 
-                  disabled={!!selectedClinic}
-                />
-                <Input 
-                  label="Clinic Zip" 
-                  value={clinicForm.address_zip} 
-                  onChange={(e) => setClinicForm({...clinicForm, address_zip: e.target.value})} 
-                  disabled={!!selectedClinic}
-                />
+                <Input label="City" value={clinicForm.address_city} onChange={(e) => setClinicForm({...clinicForm, address_city: e.target.value})} disabled={!!selectedClinic} />
+                <Input label="State" value={clinicForm.address_state} onChange={(e) => setClinicForm({...clinicForm, address_state: e.target.value})} disabled={!!selectedClinic} />
+                <Input label="Zip" value={clinicForm.address_zip} onChange={(e) => setClinicForm({...clinicForm, address_zip: e.target.value})} disabled={!!selectedClinic} />
               </div>
-              <Input 
-                label="Clinic LinkedIn Page" 
-                value={clinicForm.social_linkedin} 
-                onChange={(e) => setClinicForm({...clinicForm, social_linkedin: e.target.value})} 
-                disabled={!!selectedClinic}
-              />
-              {selectedClinic && (
-                <p className="text-[10px] text-slate font-body italic">
-                  Note: Clinic fields are locked because you linked to an existing profile. To edit them, update the company profile.
-                </p>
+
+              {companyDefs.length > 0 && (
+                <div className="border-t border-line/50 pt-3 space-y-3">
+                  <span className="text-xs text-slate font-semibold font-body">Company Custom Fields</span>
+                  {companyDefs.map(def => (
+                    <Input 
+                      key={def.id} 
+                      label={def.name} 
+                      value={companyCustomValues[def.key] || ""} 
+                      onChange={(e) => setCompanyCustomValues({...companyCustomValues, [def.key]: e.target.value})} 
+                    />
+                  ))}
+                </div>
               )}
+
+              <button
+                type="button"
+                onClick={() => handleAddCustomField("company")}
+                className="text-berry text-xs font-semibold flex items-center gap-1 hover:underline mt-2"
+              >
+                <Plus size={14} /> Add Company Custom Field
+              </button>
             </div>
           )}
         </div>
