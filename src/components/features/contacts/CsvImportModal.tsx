@@ -11,7 +11,6 @@ import { slugifyFieldKey } from "@/lib/utils";
 
 type Step = "UPLOAD" | "MAP" | "IMPORTING";
 
-// Clean name splitter helper
 function splitFullName(fullName: string) {
   let clean = fullName.trim();
   clean = clean.replace(/^(dr\.|mr\.|mrs\.|ms\.|prof\.|doctor)\s+/i, "");
@@ -38,28 +37,31 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
   const fetchDefinitionsAndMemory = async () => {
     if (!activeOrgId) return { memory: {}, defsPerson: [], defsCompany: [] };
 
-    // 1. Fetch Custom Field Definitions
-    const { data: defs } = await supabase
-      .from("custom_field_definitions")
-      .select("key, name, target_type")
-      .eq("org_id", activeOrgId);
+    try {
+      const { data: defs } = await supabase
+        .from("custom_field_definitions")
+        .select("key, name, target_type")
+        .eq("org_id", activeOrgId);
 
-    const personDefs = defs?.filter(d => d.target_type === 'contact') || [];
-    const companyDefs = defs?.filter(d => d.target_type === 'company') || [];
-    
-    setPersonCustomDefs(personDefs);
-    setCompanyCustomDefs(companyDefs);
+      const personDefs = defs?.filter(d => d.target_type === 'contact') || [];
+      const companyDefs = defs?.filter(d => d.target_type === 'company') || [];
+      
+      setPersonCustomDefs(personDefs);
+      setCompanyCustomDefs(companyDefs);
 
-    // 2. Fetch Mapping Memory
-    const { data: memoryRows } = await supabase
-      .from("import_field_mappings")
-      .select("raw_header, target_mapping")
-      .eq("org_id", activeOrgId);
+      const { data: memoryRows } = await supabase
+        .from("import_field_mappings")
+        .select("raw_header, target_mapping")
+        .eq("org_id", activeOrgId);
 
-    const memoryMap: Record<string, string> = {};
-    memoryRows?.forEach(m => { memoryMap[m.raw_header] = m.target_mapping; });
+      const memoryMap: Record<string, string> = {};
+      memoryRows?.forEach(m => { memoryMap[m.raw_header] = m.target_mapping; });
 
-    return { memory: memoryMap, defsPerson: personDefs, defsCompany: companyDefs };
+      return { memory: memoryMap, defsPerson: personDefs, defsCompany: companyDefs };
+    } catch (err) {
+      console.warn("Initialization error in CSV modal:", err);
+      return { memory: {}, defsPerson: [], defsCompany: [] };
+    }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -79,20 +81,16 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
           setHeaders(extractedHeaders);
           setCsvData(results.data);
           
-          // INTELLIGENT FUZZY MAPPING WITH MEMORY & PREFIX SENSING
           const initialMap: Record<string, string> = {};
           
           extractedHeaders.forEach(h => {
-            // Check memory first!
             if (memory[h]) {
               initialMap[h] = memory[h];
               return;
             }
 
             const cleanHeader = slugifyFieldKey(h);
-            const lowerHeader = h.toLowerCase();
 
-            // Check Company Prefixes
             if (cleanHeader.startsWith("company") || cleanHeader.startsWith("clinic") || cleanHeader.startsWith("business")) {
               if (cleanHeader.includes("name") || cleanHeader.includes("title")) initialMap[h] = "company:name";
               else if (cleanHeader.includes("website") || cleanHeader.includes("site") || cleanHeader.includes("url")) initialMap[h] = "company:website";
@@ -106,7 +104,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
               return;
             }
 
-            // Check Person / General Synonyms
             if (["firstname", "fname", "first", "givenname"].includes(cleanHeader)) initialMap[h] = "person:first_name";
             else if (["lastname", "lname", "last", "surname"].includes(cleanHeader)) initialMap[h] = "person:last_name";
             else if (["fullname", "name", "contactname", "personname", "clientname"].includes(cleanHeader)) initialMap[h] = "person:full_name";
@@ -138,13 +135,12 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
 
       const cleanKey = slugifyFieldKey(fieldName);
 
-      // Upsert Custom Field Definition
       const { data: newDef, error } = await supabase.from("custom_field_definitions").upsert({
         org_id: activeOrgId,
         target_type: targetType,
         name: fieldName,
         key: cleanKey
-      }, { onConflict: 'org_id, target_type, key' }).select("key, name, target_type").single();
+      }, { onConflict: 'org_id, target_type, key' }).select("key, name, target_type").maybeSingle();
 
       if (error) {
         toast.error("Failed to register custom field.");
@@ -161,55 +157,56 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
 
   const poolCompanyData = async (companyName: string, companyFields: any) => {
     if (!companyName.trim() || !activeOrgId) return null;
-
     const trimmedName = companyName.trim();
 
-    // Check if Company already exists
-    const { data: existing } = await supabase
-      .from("companies")
-      .select("*")
-      .eq("org_id", activeOrgId)
-      .ilike("name", trimmedName)
-      .maybeSingle();
+    try {
+      const { data: existing } = await supabase
+        .from("companies")
+        .select("id, website, phone, address_street, address_city, address_state, address_zip, socials, custom_fields")
+        .eq("org_id", activeOrgId)
+        .ilike("name", trimmedName)
+        .maybeSingle(); // Changed to maybeSingle to prevent unhandled rejection
 
-    if (existing) {
-      // DATA POOLING: Merge new details into existing company without overwriting existing data with empty strings!
-      const updatePayload: any = {};
-      if (companyFields.website && !existing.website) updatePayload.website = companyFields.website;
-      if (companyFields.phone && !existing.phone) updatePayload.phone = companyFields.phone;
-      if (companyFields.address_street && !existing.address_street) updatePayload.address_street = companyFields.address_street;
-      if (companyFields.address_city && !existing.address_city) updatePayload.address_city = companyFields.address_city;
-      if (companyFields.address_state && !existing.address_state) updatePayload.address_state = companyFields.address_state;
-      if (companyFields.address_zip && !existing.address_zip) updatePayload.address_zip = companyFields.address_zip;
+      if (existing) {
+        const updatePayload: any = {};
+        if (companyFields.website && !existing.website) updatePayload.website = companyFields.website;
+        if (companyFields.phone && !existing.phone) updatePayload.phone = companyFields.phone;
+        if (companyFields.address_street && !existing.address_street) updatePayload.address_street = companyFields.address_street;
+        if (companyFields.address_city && !existing.address_city) updatePayload.address_city = companyFields.address_city;
+        if (companyFields.address_state && !existing.address_state) updatePayload.address_state = companyFields.address_state;
+        if (companyFields.address_zip && !existing.address_zip) updatePayload.address_zip = companyFields.address_zip;
 
-      if (companyFields.socials && Object.keys(companyFields.socials).length > 0) {
-        updatePayload.socials = { ...(existing.socials || {}), ...companyFields.socials };
+        if (companyFields.socials && Object.keys(companyFields.socials).length > 0) {
+          updatePayload.socials = { ...(existing.socials || {}), ...companyFields.socials };
+        }
+
+        if (companyFields.custom_fields && Object.keys(companyFields.custom_fields).length > 0) {
+          updatePayload.custom_fields = { ...(existing.custom_fields || {}), ...companyFields.custom_fields };
+        }
+
+        if (Object.keys(updatePayload).length > 0) {
+          await supabase.from("companies").update(updatePayload).eq("id", existing.id);
+        }
+        return existing.id;
+      } else {
+        const { data: newComp } = await supabase.from("companies").insert({
+          org_id: activeOrgId,
+          name: trimmedName,
+          website: companyFields.website || null,
+          phone: companyFields.phone || null,
+          address_street: companyFields.address_street || null,
+          address_city: companyFields.address_city || null,
+          address_state: companyFields.address_state || null,
+          address_zip: companyFields.address_zip || null,
+          socials: companyFields.socials || {},
+          custom_fields: companyFields.custom_fields || {}
+        }).select("id").maybeSingle();
+
+        return newComp?.id || null;
       }
-
-      if (companyFields.custom_fields && Object.keys(companyFields.custom_fields).length > 0) {
-        updatePayload.custom_fields = { ...(existing.custom_fields || {}), ...companyFields.custom_fields };
-      }
-
-      if (Object.keys(updatePayload).length > 0) {
-        await supabase.from("companies").update(updatePayload).eq("id", existing.id);
-      }
-      return existing.id;
-    } else {
-      // Create brand new Company
-      const { data: newComp } = await supabase.from("companies").insert({
-        org_id: activeOrgId,
-        name: trimmedName,
-        website: companyFields.website || null,
-        phone: companyFields.phone || null,
-        address_street: companyFields.address_street || null,
-        address_city: companyFields.address_city || null,
-        address_state: companyFields.address_state || null,
-        address_zip: companyFields.address_zip || null,
-        socials: companyFields.socials || {},
-        custom_fields: companyFields.custom_fields || {}
-      }).select("id").single();
-
-      return newComp?.id || null;
+    } catch (err) {
+      console.error("[CSV Importer] Company pooling exception:", err);
+      return null; // Fail-safe: Returns null so contact creation can still proceed!
     }
   };
 
@@ -218,85 +215,118 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
     setStep("IMPORTING");
     setProgress({ current: 0, total: csvData.length });
 
-    // Save Mapping Memory across the Workspace
-    const memoryPayload = Object.entries(fieldMap).map(([raw_header, target_mapping]) => ({
-      org_id: activeOrgId,
-      raw_header,
-      target_mapping
-    }));
-    await supabase.from("import_field_mappings").upsert(memoryPayload, { onConflict: "org_id, raw_header" });
+    try {
+      // Save Mapping Memory safely
+      try {
+        const memoryPayload = Object.entries(fieldMap).map(([raw_header, target_mapping]) => ({
+          org_id: activeOrgId,
+          raw_header,
+          target_mapping
+        }));
+        await supabase.from("import_field_mappings").upsert(memoryPayload, { onConflict: "org_id, raw_header" });
+      } catch (memErr) {
+        console.warn("[CSV Importer] Memory save skipped:", memErr);
+      }
 
-    let successCount = 0;
+      let successCount = 0;
+      let errorCount = 0;
 
-    for (let i = 0; i < csvData.length; i++) {
-      const row = csvData[i];
-      
-      const personData: any = { org_id: activeOrgId, type: "lead", socials: {}, custom_fields: {} };
-      const companyData: any = { socials: {}, custom_fields: {} };
-      let companyName = "";
+      for (let i = 0; i < csvData.length; i++) {
+        const row = csvData[i];
+        
+        try {
+          const personData: any = { org_id: activeOrgId, type: "lead", socials: {}, custom_fields: {} };
+          const companyData: any = { socials: {}, custom_fields: {} };
+          let companyName = "";
 
-      headers.forEach(header => {
-        const target = fieldMap[header];
-        if (!target || target === "skip") return;
+          headers.forEach(header => {
+            const target = fieldMap[header];
+            if (!target || target === "skip") return;
 
-        const val = row[header];
-        if (!val || !val.trim()) return;
+            const val = row[header];
+            if (!val || !val.trim()) return;
 
-        if (target.startsWith("person:")) {
-          const field = target.replace("person:", "");
-          if (field === "full_name") {
-            const { firstName, lastName } = splitFullName(val);
-            personData.first_name = firstName;
-            personData.last_name = lastName;
-          } else if (field === "social_linkedin") {
-            personData.socials.linkedin = val;
-          } else {
-            personData[field] = val;
+            if (target.startsWith("person:")) {
+              const field = target.replace("person:", "");
+              if (field === "full_name") {
+                const { firstName, lastName } = splitFullName(val);
+                personData.first_name = firstName;
+                personData.last_name = lastName;
+              } else if (field === "social_linkedin") {
+                personData.socials.linkedin = val;
+              } else {
+                personData[field] = val;
+              }
+            } else if (target.startsWith("company:")) {
+              const field = target.replace("company:", "");
+              if (field === "name") companyName = val;
+              else if (field === "social_linkedin") companyData.socials.linkedin = val;
+              else companyData[field] = val;
+            } else if (target.startsWith("custom:person:")) {
+              const key = target.replace("custom:person:", "");
+              personData.custom_fields[key] = val;
+            } else if (target.startsWith("custom:company:")) {
+              const key = target.replace("custom:company:", "");
+              companyData.custom_fields[key] = val;
+            }
+          });
+
+          // Pass 1: Pool Company
+          let companyId = null;
+          if (companyName) {
+            companyId = await poolCompanyData(companyName, companyData);
           }
-        } else if (target.startsWith("company:")) {
-          const field = target.replace("company:", "");
-          if (field === "name") companyName = val;
-          else if (field === "social_linkedin") companyData.socials.linkedin = val;
-          else companyData[field] = val;
-        } else if (target.startsWith("custom:person:")) {
-          const key = target.replace("custom:person:", "");
-          personData.custom_fields[key] = val;
-        } else if (target.startsWith("custom:company:")) {
-          const key = target.replace("custom:company:", "");
-          companyData.custom_fields[key] = val;
+
+          // Pass 2: Save Contact
+          personData.company_id = companyId;
+          personData.first_name = personData.first_name || "Unknown";
+          personData.last_name = personData.last_name || "Contact";
+          personData.stage = personData.stage || "New Lead";
+
+          if (personData.email) {
+            const { error: upsertErr } = await supabase
+              .from("contacts")
+              .upsert(personData, { onConflict: 'org_id, email', ignoreDuplicates: false });
+
+            if (upsertErr) {
+              // Fallback to standard insert if unique constraint on email isn't present
+              const { error: fallbackErr } = await supabase.from("contacts").insert(personData);
+              if (!fallbackErr) successCount++;
+              else errorCount++;
+            } else {
+              successCount++;
+            }
+          } else {
+            const { error: insertErr } = await supabase.from("contacts").insert(personData);
+            if (!insertErr) successCount++;
+            else errorCount++;
+          }
+        } catch (rowErr) {
+          console.error(`[CSV Importer] Row ${i} processing exception:`, rowErr);
+          errorCount++;
         }
-      });
 
-      // Pass 1: Pool & Upsert Company
-      let companyId = null;
-      if (companyName) {
-        companyId = await poolCompanyData(companyName, companyData);
+        // ALWAYS update progress so the UI advances!
+        setProgress({ current: i + 1, total: csvData.length });
       }
 
-      // Pass 2: Upsert Contact with linked company_id
-      personData.company_id = companyId;
-      personData.first_name = personData.first_name || "Unknown";
-      personData.last_name = personData.last_name || "Contact";
-      personData.stage = personData.stage || "New Lead";
-
-      if (personData.email || personData.phone) {
-        const { error } = await supabase
-          .from("contacts")
-          .upsert(personData, { onConflict: 'org_id, email', ignoreDuplicates: false });
-        if (!error) successCount++;
+      if (errorCount > 0) {
+        toast.error(`Import finished: ${successCount} saved, ${errorCount} skipped.`);
+      } else {
+        toast.success(`Successfully imported ${successCount} records!`);
       }
-
-      setProgress({ current: i + 1, total: csvData.length });
+    } catch (fatalErr: any) {
+      console.error("[CSV Importer Fatal Crash]:", fatalErr);
+      toast.error("Import error: " + (fatalErr.message || "Unknown error"));
+    } finally {
+      // ALWAYS RESET STATE so the user is NEVER trapped on an infinite loading screen!
+      setFile(null);
+      setCsvData([]);
+      setHeaders([]);
+      setStep("UPLOAD");
+      onSuccess();
+      onClose();
     }
-
-    toast.success(`Import complete! Processed ${successCount} records and pooled clinic profile data.`);
-
-    setFile(null);
-    setCsvData([]);
-    setHeaders([]);
-    setStep("UPLOAD");
-    onSuccess();
-    onClose();
   };
 
   return (
