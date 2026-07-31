@@ -4,7 +4,7 @@ export interface SendEmailPayload {
   subject: string;
   text: string;
   html?: string;
-  attachments?: { filename: string; path: string }[];
+  attachments?: { filename: string; path?: string; content?: Buffer }[];
 }
 
 export interface EmailProvider {
