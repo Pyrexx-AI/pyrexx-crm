@@ -26,6 +26,19 @@ export default function ContactsPage() {
   const supabase = createClient();
   const { currentWorkspace, activeOrgId } = useAppStore();
 
+  const fetchCounts = async () => {
+    if (!activeOrgId) return;
+    
+    // Explicitly fetch exact counts to populate the DynamicIsland header
+    const [peopleRes, companiesRes] = await Promise.all([
+      supabase.from("contacts").select("id", { count: 'exact', head: true }).eq("org_id", activeOrgId),
+      supabase.from("companies").select("id", { count: 'exact', head: true }).eq("org_id", activeOrgId)
+    ]);
+
+    if (peopleRes.count !== null) setPeopleCount(peopleRes.count);
+    if (companiesRes.count !== null) setCompaniesCount(companiesRes.count);
+  };
+
   const fetchRecords = async () => {
     if (!activeOrgId) return;
     setIsLoading(true);
@@ -41,9 +54,8 @@ export default function ContactsPage() {
         query = query.textSearch("search_vector", searchQuery.trim(), { type: 'websearch', config: 'english' });
       }
 
-      const { data, count } = await query;
+      const { data } = await query;
       if (data) setRecords(data);
-      if (count !== null) setPeopleCount(count);
     } else {
       let query = supabase
         .from("companies")
@@ -55,27 +67,38 @@ export default function ContactsPage() {
         query = query.ilike("name", `%${searchQuery.trim()}%`);
       }
 
-      const { data, count } = await query;
+      const { data } = await query;
       if (data) setRecords(data);
-      if (count !== null) setCompaniesCount(count);
     }
 
     setIsLoading(false);
   };
 
   useEffect(() => {
-    fetchRecords();
+    if (activeOrgId) fetchCounts();
+  }, [activeOrgId, viewMode]);
+
+  useEffect(() => {
+    const delay = setTimeout(() => fetchRecords(), 300);
+    return () => clearTimeout(delay);
   }, [viewMode, searchQuery, activeOrgId, currentWorkspace]);
+
+  const handleRefresh = () => {
+    fetchCounts();
+    fetchRecords();
+  };
 
   return (
     <AppLayout>
       <div className="p-4 md:p-8 max-w-7xl mx-auto flex-1 w-full max-w-full overflow-x-hidden">
         
-        {/* Top Floating Dynamic Island Control */}
         <div className="flex justify-center mb-6">
           <DynamicIsland 
             activeTab={viewMode} 
-            onTabChange={(tab) => setViewMode(tab)} 
+            onTabChange={(tab) => {
+              setSearchQuery(""); // Clear search when switching tabs
+              setViewMode(tab);
+            }} 
             peopleCount={peopleCount}
             companiesCount={companiesCount}
           />
@@ -104,17 +127,8 @@ export default function ContactsPage() {
           isLoading={isLoading}
         />
 
-        <ContactFormModal 
-          isOpen={isFormOpen} 
-          onClose={() => setIsFormOpen(false)} 
-          onSuccess={fetchRecords}
-        />
-        
-        <CsvImportModal 
-          isOpen={isImportOpen} 
-          onClose={() => setIsImportOpen(false)} 
-          onSuccess={fetchRecords}
-        />
+        <ContactFormModal isOpen={isFormOpen} onClose={() => setIsFormOpen(false)} onSuccess={handleRefresh} />
+        <CsvImportModal isOpen={isImportOpen} onClose={() => setIsImportOpen(false)} onSuccess={handleRefresh} />
       </div>
       <Toaster position="top-right" richColors />
     </AppLayout>
