@@ -3,7 +3,7 @@ import React, { useState } from "react";
 import Papa from "papaparse";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
-import { Upload, ArrowRight, CheckCircle2 } from "lucide-react";
+import { Upload, ArrowRight, CheckCircle2, Plus } from "lucide-react";
 import { createClient } from "@/lib/supabase";
 import { useAppStore } from "@/store/useAppStore";
 import { toast } from "sonner";
@@ -19,6 +19,16 @@ function splitFullName(fullName: string) {
   const lastName = parts.slice(1).join(" ") || "Contact";
   return { firstName, lastName };
 }
+
+const STANDARD_FIELDS = [
+  { key: "first_name", label: "First Name" },
+  { key: "last_name", label: "Last Name" },
+  { key: "full_name", label: "Full Name (Auto-Split)" },
+  { key: "email", label: "Email Address" },
+  { key: "phone", label: "Phone Number" },
+  { key: "position", label: "Position / Job Title" },
+  { key: "stage", label: "Pipeline Stage" },
+];
 
 export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean, onClose: () => void, onSuccess: () => void }) {
   const supabase = createClient();
@@ -165,7 +175,7 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
         .select("id, website, phone, address_street, address_city, address_state, address_zip, socials, custom_fields")
         .eq("org_id", activeOrgId)
         .ilike("name", trimmedName)
-        .maybeSingle(); // Changed to maybeSingle to prevent unhandled rejection
+        .maybeSingle(); 
 
       if (existing) {
         const updatePayload: any = {};
@@ -206,7 +216,7 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
       }
     } catch (err) {
       console.error("[CSV Importer] Company pooling exception:", err);
-      return null; // Fail-safe: Returns null so contact creation can still proceed!
+      return null;
     }
   };
 
@@ -216,7 +226,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
     setProgress({ current: 0, total: csvData.length });
 
     try {
-      // Save Mapping Memory safely
       try {
         const memoryPayload = Object.entries(fieldMap).map(([raw_header, target_mapping]) => ({
           org_id: activeOrgId,
@@ -224,9 +233,7 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
           target_mapping
         }));
         await supabase.from("import_field_mappings").upsert(memoryPayload, { onConflict: "org_id, raw_header" });
-      } catch (memErr) {
-        console.warn("[CSV Importer] Memory save skipped:", memErr);
-      }
+      } catch (memErr) {}
 
       let successCount = 0;
       let errorCount = 0;
@@ -277,8 +284,22 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
             companyId = await poolCompanyData(companyName, companyData);
           }
 
-          // Pass 2: Save Contact
-          personData.company_id = companyId;
+          // FIX: Prevent accidental unlinking of existing doctors if CSV is missing companyName
+          let finalCompanyId = companyId;
+          if (personData.email && !finalCompanyId) {
+            const { data: extContact } = await supabase
+              .from("contacts")
+              .select("company_id")
+              .eq("org_id", activeOrgId)
+              .eq("email", personData.email)
+              .maybeSingle();
+
+            if (extContact?.company_id) {
+              finalCompanyId = extContact.company_id;
+            }
+          }
+
+          personData.company_id = finalCompanyId;
           personData.first_name = personData.first_name || "Unknown";
           personData.last_name = personData.last_name || "Contact";
           personData.stage = personData.stage || "New Lead";
@@ -289,7 +310,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
               .upsert(personData, { onConflict: 'org_id, email', ignoreDuplicates: false });
 
             if (upsertErr) {
-              // Fallback to standard insert if unique constraint on email isn't present
               const { error: fallbackErr } = await supabase.from("contacts").insert(personData);
               if (!fallbackErr) successCount++;
               else errorCount++;
@@ -306,7 +326,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
           errorCount++;
         }
 
-        // ALWAYS update progress so the UI advances!
         setProgress({ current: i + 1, total: csvData.length });
       }
 
@@ -319,7 +338,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
       console.error("[CSV Importer Fatal Crash]:", fatalErr);
       toast.error("Import error: " + (fatalErr.message || "Unknown error"));
     } finally {
-      // ALWAYS RESET STATE so the user is NEVER trapped on an infinite loading screen!
       setFile(null);
       setCsvData([]);
       setHeaders([]);
@@ -330,7 +348,7 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={() => { if(step !== "IMPORTING") onClose(); }} title="B2B Relationship Import Engine">
+    <Modal isOpen={isOpen} onClose={() => { if(step !== "IMPORTING") onClose(); }} title="Smart Import Wizard">
       
       {step === "UPLOAD" && (
         <div className="flex flex-col items-center justify-center border-2 border-dashed border-line rounded-xl p-8 bg-paperDim text-center">
@@ -432,7 +450,7 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
       {step === "IMPORTING" && (
         <div className="flex flex-col items-center justify-center p-8 text-center">
           <div className="w-8 h-8 border-4 border-berry border-t-transparent rounded-full animate-spin mb-4" />
-          <h3 className="text-lg font-medium text-ink font-body">Importing & Pooling Data...</h3>
+          <h3 className="text-lg font-medium text-ink font-body">Importing Data...</h3>
           <p className="text-sm text-slate mt-2 font-mono">{progress.current} / {progress.total} rows processed.</p>
           <p className="text-xs text-slate mt-4 italic">Merging clinic profiles and saving contact records...</p>
         </div>

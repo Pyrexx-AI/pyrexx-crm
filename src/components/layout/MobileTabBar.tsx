@@ -3,10 +3,7 @@ import React from "react";
 import { useAppStore } from "@/store/useAppStore";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
-import { 
-  LayoutDashboard, Users, Columns, Inbox, 
-  MoreHorizontal, Phone, PhoneOutgoing 
-} from "lucide-react";
+import { LayoutDashboard, Users, Columns, Inbox, MoreHorizontal, Phone } from "lucide-react";
 
 const AGENCY_NAV = [
   { key: "dashboard", label: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -33,22 +30,13 @@ export function MobileTabBar() {
         const Icon = item.icon;
         const active = pathname === item.href;
         return (
-          <Link 
-            key={item.key} 
-            href={item.href} 
-            className="flex flex-col items-center gap-0.5 px-2 py-1.5 flex-1"
-          >
+          <Link key={item.key} href={item.href} className="flex flex-col items-center gap-0.5 px-2 py-1.5 flex-1">
             <Icon size={19} className={active ? "text-berry" : "text-slate"} />
-            <span className={`text-[10px] font-body ${active ? "text-paper" : "text-slate"}`}>
-              {item.label}
-            </span>
+            <span className={`text-[10px] font-body ${active ? "text-paper" : "text-slate"}`}>{item.label}</span>
           </Link>
         );
       })}
-      <button 
-        onClick={() => setMobileMenuOpen(true)} 
-        className="flex flex-col items-center gap-0.5 px-2 py-1.5 flex-1"
-      >
+      <button onClick={() => setMobileMenuOpen(true)} className="flex flex-col items-center gap-0.5 px-2 py-1.5 flex-1">
         <MoreHorizontal size={19} className="text-slate" />
         <span className="text-[10px] text-slate font-body">More</span>
       </button>

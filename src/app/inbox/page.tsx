@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase";
 import { useAppStore } from "@/store/useAppStore";
 import { InboxThread } from "@/components/features/inbox/InboxThread";
 import { useSearchParams } from "next/navigation";
+import { stripHtml } from "@/lib/utils";
 
 function InboxContent() {
   const supabase = createClient();
@@ -47,7 +48,7 @@ function InboxContent() {
   }, [activeOrgId, queryThreadId, supabase]);
 
   return (
-    <div className="flex-1 flex h-full w-full bg-paper">
+    <div className="flex-1 flex h-full w-full bg-paper max-w-full">
       <div 
         className={`w-full md:w-80 flex-shrink-0 border-r border-line h-full overflow-y-auto ${
           activeThread ? "hidden md:block" : "block"
@@ -65,6 +66,8 @@ function InboxContent() {
         ) : (
           threads.map((t) => {
             const contactName = `${t.contacts?.first_name || 'Unknown'} ${t.contacts?.last_name || ''}`;
+            const cleanPreview = stripHtml(t.preview || "New conversation");
+
             return (
               <button
                 key={t.id}
@@ -86,7 +89,7 @@ function InboxContent() {
                   <div className="flex items-center gap-1.5">
                     {t.channel === "email" ? <Mail size={11} className="text-slate flex-shrink-0" /> : <MessageSquare size={11} className="text-slate flex-shrink-0" />}
                     <span className={`text-xs truncate font-body ${t.is_unread ? "text-ink font-medium" : "text-slate"}`}>
-                      {t.preview || "New conversation"}
+                      {cleanPreview}
                     </span>
                   </div>
                 </div>

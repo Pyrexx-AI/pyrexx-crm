@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import React from "react";
 import { useAppStore } from "@/store/useAppStore";
 import { PulseTrace } from "@/components/ui/PulseTrace";
 import { Avatar } from "@/components/ui/Avatar";
@@ -43,9 +43,6 @@ export function Sidebar() {
   const router = useRouter();
   const nav = currentWorkspace === "agency" ? AGENCY_NAV : CLINIC_NAV;
 
-  const [isMounted, setIsMounted] = useState(false);
-  useEffect(() => setIsMounted(true), []);
-
   const handleWorkspaceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const selectedOrgId = e.target.value;
     const targetWorkspace = workspaces.find((w) => w.id === selectedOrgId);
@@ -82,7 +79,6 @@ export function Sidebar() {
                 ))}
               </optgroup>
             )}
-            
             {clinicWorkspaces.length > 0 && (
               <optgroup label="Client Clinics">
                 {clinicWorkspaces.map((w) => (
@@ -92,9 +88,7 @@ export function Sidebar() {
             )}
           </select>
           <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-slate">
-            <svg className="w-4 h-4 fill-current" viewBox="0 0 20 20">
-              <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
-            </svg>
+            <svg className="w-4 h-4 fill-current" viewBox="0 0 20 20"><path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" /></svg>
           </div>
         </div>
       </div>
@@ -104,13 +98,7 @@ export function Sidebar() {
           const active = pathname === item.href;
           const Icon = item.icon;
           return (
-            <Link
-              key={item.key}
-              href={item.href}
-              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm relative transition-colors font-body ${
-                active ? "text-paper bg-inkSoft" : "text-slate bg-transparent hover:text-paper hover:bg-inkSoft/50"
-              }`}
-            >
+            <Link key={item.key} href={item.href} className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm relative transition-colors font-body ${active ? "text-paper bg-inkSoft" : "text-slate bg-transparent hover:text-paper hover:bg-inkSoft/50"}`}>
               {active && <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-berry" />}
               <Icon size={16} />
               {item.label}
@@ -120,21 +108,11 @@ export function Sidebar() {
       </nav>
 
       <div className="px-3 pb-4 space-y-0.5">
-        <Link
-          href="/settings/integrations"
-          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors font-body ${
-            pathname === "/settings/integrations" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
-          }`}
-        >
+        <Link href="/settings/integrations" className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors font-body ${pathname === "/settings/integrations" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"}`}>
           <Blocks size={16} />
           Integrations & Auto
         </Link>
-        <Link
-          href="/settings/team"
-          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors font-body ${
-            pathname === "/settings/team" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
-          }`}
-        >
+        <Link href="/settings/team" className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors font-body ${pathname === "/settings/team" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"}`}>
           <Settings size={16} />
           Settings & Team
         </Link>
@@ -143,8 +121,8 @@ export function Sidebar() {
       <div className="p-4 flex items-center gap-2.5 border-t border-inkSoft">
         <Avatar name={userName} size={30} />
         <div className="text-xs font-body truncate">
-          <div className="text-paper font-medium truncate">{isMounted ? userName : "Loading..."}</div>
-          <div className="text-slate capitalize truncate">{isMounted ? userRole : ""}</div>
+          <div className="text-paper font-medium truncate">{userName}</div>
+          <div className="text-slate capitalize truncate">{userRole}</div>
         </div>
       </div>
     </div>

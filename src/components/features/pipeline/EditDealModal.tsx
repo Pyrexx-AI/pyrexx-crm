@@ -14,7 +14,8 @@ import { useAppStore } from "@/store/useAppStore";
 const editDealSchema = z.object({
   name: z.string().min(1, "Deal name is required"),
   value: z.coerce.number().min(0, "Value cannot be negative"),
-  next_action: z.string().optional(),
+  // FIX: Enforced next action requirement
+  next_action: z.string().min(1, "You must specify a next action"), 
 });
 
 type EditDealValues = z.infer<typeof editDealSchema>;
@@ -94,7 +95,7 @@ export function EditDealModal({ isOpen, deal, onClose, onSuccess }: EditDealModa
         <Input label="Next Action" {...register("next_action")} error={errors.next_action?.message} />
         
         <div className="flex justify-between items-center pt-4 border-t border-line mt-4">
-          {(userRole === 'owner' || userRole === 'manager') ? (
+          {(['owner', 'manager', 'admin'].includes(userRole?.toLowerCase() || '')) ? (
             <button type="button" onClick={handleDelete} disabled={isDeleting} className="text-berry text-sm flex items-center gap-1 hover:underline">
               <Trash2 size={16} /> Delete Deal
             </button>

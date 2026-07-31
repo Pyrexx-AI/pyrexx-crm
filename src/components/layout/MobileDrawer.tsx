@@ -60,7 +60,6 @@ export function MobileDrawer() {
       setActiveOrgId(targetWorkspace.id);
       setWorkspace(targetWorkspace.type);
       setMobileMenuOpen(false);
-      // FIX: Use soft navigation here too
       router.push("/");
     }
   };
@@ -75,9 +74,7 @@ export function MobileDrawer() {
           <PulseTrace sentiment="positive" size="sm" />
           <span className="font-body font-bold text-paper text-[15px]">Pyrexx CRM</span>
         </div>
-        <button onClick={() => setMobileMenuOpen(false)}>
-          <X size={20} className="text-paper" />
-        </button>
+        <button onClick={() => setMobileMenuOpen(false)}><X size={20} className="text-paper" /></button>
       </div>
 
       <div className="px-4 mb-5">
@@ -89,24 +86,17 @@ export function MobileDrawer() {
           >
             {agencyWorkspaces.length > 0 && (
               <optgroup label="Agency">
-                {agencyWorkspaces.map((w) => (
-                  <option key={w.id} value={w.id}>{w.name}</option>
-                ))}
+                {agencyWorkspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
               </optgroup>
             )}
-            
             {clinicWorkspaces.length > 0 && (
               <optgroup label="Client Clinics">
-                {clinicWorkspaces.map((w) => (
-                  <option key={w.id} value={w.id}>{w.name}</option>
-                ))}
+                {clinicWorkspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
               </optgroup>
             )}
           </select>
           <div className="absolute inset-y-0 right-0 flex items-center px-4 pointer-events-none text-slate">
-            <svg className="w-5 h-5 fill-current" viewBox="0 0 20 20">
-              <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
-            </svg>
+            <svg className="w-5 h-5 fill-current" viewBox="0 0 20 20"><path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" /></svg>
           </div>
         </div>
       </div>
@@ -116,37 +106,16 @@ export function MobileDrawer() {
           const Icon = item.icon;
           const active = pathname === item.href;
           return (
-            <Link
-              key={item.key}
-              href={item.href}
-              onClick={() => setMobileMenuOpen(false)}
-              className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${
-                active ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
-              }`}
-            >
+            <Link key={item.key} href={item.href} onClick={() => setMobileMenuOpen(false)} className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${active ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"}`}>
               <Icon size={18} /> {item.label}
             </Link>
           );
         })}
-        
         <div className="my-2 border-t border-inkSoft/50 pt-2" />
-        
-        <Link
-          href="/settings/integrations"
-          onClick={() => setMobileMenuOpen(false)}
-          className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${
-            pathname === "/settings/integrations" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
-          }`}
-        >
+        <Link href="/settings/integrations" onClick={() => setMobileMenuOpen(false)} className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${pathname === "/settings/integrations" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"}`}>
           <Blocks size={18} /> Integrations & Auto
         </Link>
-        <Link
-          href="/settings/team"
-          onClick={() => setMobileMenuOpen(false)}
-          className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${
-            pathname === "/settings/team" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"
-          }`}
-        >
+        <Link href="/settings/team" onClick={() => setMobileMenuOpen(false)} className={`w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm font-body transition-colors ${pathname === "/settings/team" ? "text-paper bg-inkSoft" : "text-slate hover:text-paper hover:bg-inkSoft/50"}`}>
           <Settings size={18} /> Settings & Team
         </Link>
       </div>
