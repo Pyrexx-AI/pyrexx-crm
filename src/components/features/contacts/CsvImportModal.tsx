@@ -26,6 +26,7 @@ const STANDARD_FIELDS = [
   { key: "full_name", label: "Full Name (Auto-Split)" },
   { key: "email", label: "Email Address" },
   { key: "phone", label: "Phone Number" },
+  { key: "secondary_phone", label: "Secondary / Work Phone" },
   { key: "position", label: "Position / Job Title" },
   { key: "stage", label: "Pipeline Stage" },
 ];
@@ -79,7 +80,6 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
     if (!selectedFile || !activeOrgId) return;
     
     setFile(selectedFile);
-
     const { memory } = await fetchDefinitionsAndMemory();
 
     Papa.parse(selectedFile, {
@@ -170,12 +170,14 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
     const trimmedName = companyName.trim();
 
     try {
-      const { data: existing } = await supabase
+      const { data: existing, error: searchErr } = await supabase
         .from("companies")
         .select("id, website, phone, address_street, address_city, address_state, address_zip, socials, custom_fields")
         .eq("org_id", activeOrgId)
         .ilike("name", trimmedName)
-        .maybeSingle(); 
+        .maybeSingle();
+
+      if (searchErr) console.error("[CSV Importer] Company search error:", searchErr);
 
       if (existing) {
         const updatePayload: any = {};
@@ -186,20 +188,19 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
         if (companyFields.address_state && !existing.address_state) updatePayload.address_state = companyFields.address_state;
         if (companyFields.address_zip && !existing.address_zip) updatePayload.address_zip = companyFields.address_zip;
 
-        if (companyFields.socials && Object.keys(companyFields.socials).length > 0) {
-          updatePayload.socials = { ...(existing.socials || {}), ...companyFields.socials };
-        }
+        // Safely merge JSONB fields
+        const mergedSocials = { ...(existing.socials || {}), ...(companyFields.socials || {}) };
+        if (JSON.stringify(mergedSocials) !== JSON.stringify(existing.socials || {})) updatePayload.socials = mergedSocials;
 
-        if (companyFields.custom_fields && Object.keys(companyFields.custom_fields).length > 0) {
-          updatePayload.custom_fields = { ...(existing.custom_fields || {}), ...companyFields.custom_fields };
-        }
+        const mergedCustom = { ...(existing.custom_fields || {}), ...(companyFields.custom_fields || {}) };
+        if (JSON.stringify(mergedCustom) !== JSON.stringify(existing.custom_fields || {})) updatePayload.custom_fields = mergedCustom;
 
         if (Object.keys(updatePayload).length > 0) {
           await supabase.from("companies").update(updatePayload).eq("id", existing.id);
         }
         return existing.id;
       } else {
-        const { data: newComp } = await supabase.from("companies").insert({
+        const { data: newComp, error: insertErr } = await supabase.from("companies").insert({
           org_id: activeOrgId,
           name: trimmedName,
           website: companyFields.website || null,
@@ -212,10 +213,11 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
           custom_fields: companyFields.custom_fields || {}
         }).select("id").maybeSingle();
 
+        if (insertErr) console.error("[CSV Importer] Company insert error:", insertErr);
         return newComp?.id || null;
       }
     } catch (err) {
-      console.error("[CSV Importer] Company pooling exception:", err);
+      console.error("[CSV Importer] Fatal Company pooling exception:", err);
       return null;
     }
   };
@@ -226,18 +228,19 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
     setProgress({ current: 0, total: csvData.length });
 
     try {
-      try {
-        const memoryPayload = Object.entries(fieldMap).map(([raw_header, target_mapping]) => ({
-          org_id: activeOrgId,
-          raw_header,
-          target_mapping
-        }));
+      // 1. Save Memory for future imports
+      const memoryPayload = Object.entries(fieldMap)
+        .filter(([_, mapping]) => mapping !== "skip")
+        .map(([raw_header, target_mapping]) => ({ org_id: activeOrgId, raw_header, target_mapping }));
+      
+      if (memoryPayload.length > 0) {
         await supabase.from("import_field_mappings").upsert(memoryPayload, { onConflict: "org_id, raw_header" });
-      } catch (memErr) {}
+      }
 
       let successCount = 0;
       let errorCount = 0;
 
+      // 2. Sequential Processor to ensure intra-batch duplicates merge correctly
       for (let i = 0; i < csvData.length; i++) {
         const row = csvData[i];
         
@@ -278,48 +281,50 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
             }
           });
 
-          // Pass 1: Pool Company
+          // A: Pool Company Data safely
           let companyId = null;
           if (companyName) {
             companyId = await poolCompanyData(companyName, companyData);
           }
 
-          // FIX: Prevent accidental unlinking of existing doctors if CSV is missing companyName
-          let finalCompanyId = companyId;
-          if (personData.email && !finalCompanyId) {
-            const { data: extContact } = await supabase
-              .from("contacts")
-              .select("company_id")
-              .eq("org_id", activeOrgId)
-              .eq("email", personData.email)
-              .maybeSingle();
-
-            if (extContact?.company_id) {
-              finalCompanyId = extContact.company_id;
-            }
-          }
-
-          personData.company_id = finalCompanyId;
+          personData.company_id = companyId;
           personData.first_name = personData.first_name || "Unknown";
           personData.last_name = personData.last_name || "Contact";
           personData.stage = personData.stage || "New Lead";
 
+          // B: Cascading Idempotency Engine for Contacts
           if (personData.email) {
-            const { error: upsertErr } = await supabase
-              .from("contacts")
-              .upsert(personData, { onConflict: 'org_id, email', ignoreDuplicates: false });
-
-            if (upsertErr) {
-              const { error: fallbackErr } = await supabase.from("contacts").insert(personData);
-              if (!fallbackErr) successCount++;
-              else errorCount++;
-            } else {
-              successCount++;
+            // Priority 1: Exact Email Match
+            const { error: upsertErr } = await supabase.from("contacts").upsert(personData, { onConflict: 'org_id, email' });
+            if (!upsertErr) successCount++;
+            else {
+              console.error("[CSV Importer] Email Upsert Error:", upsertErr);
+              errorCount++;
             }
           } else {
-            const { error: insertErr } = await supabase.from("contacts").insert(personData);
-            if (!insertErr) successCount++;
-            else errorCount++;
+            // Priority 2: Phone or Name Fallback
+            let matchQuery = supabase.from("contacts").select("id").eq("org_id", activeOrgId);
+            
+            if (personData.phone) matchQuery = matchQuery.eq("phone", personData.phone);
+            else matchQuery = matchQuery.eq("first_name", personData.first_name).eq("last_name", personData.last_name);
+
+            const { data: existingContact } = await matchQuery.maybeSingle();
+
+            if (existingContact) {
+              const { error: updateErr } = await supabase.from("contacts").update(personData).eq("id", existingContact.id);
+              if (!updateErr) successCount++;
+              else {
+                console.error("[CSV Importer] Contact Update Error:", updateErr);
+                errorCount++;
+              }
+            } else {
+              const { error: insertErr } = await supabase.from("contacts").insert(personData);
+              if (!insertErr) successCount++;
+              else {
+                console.error("[CSV Importer] Contact Insert Error:", insertErr);
+                errorCount++;
+              }
+            }
           }
         } catch (rowErr) {
           console.error(`[CSV Importer] Row ${i} processing exception:`, rowErr);
@@ -330,9 +335,9 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
       }
 
       if (errorCount > 0) {
-        toast.error(`Import finished: ${successCount} saved, ${errorCount} skipped.`);
+        toast.error(`Import finished: ${successCount} saved, ${errorCount} skipped due to errors.`);
       } else {
-        toast.success(`Successfully imported ${successCount} records!`);
+        toast.success(`Successfully mapped and imported ${successCount} records!`);
       }
     } catch (fatalErr: any) {
       console.error("[CSV Importer Fatal Crash]:", fatalErr);
@@ -450,9 +455,9 @@ export function CsvImportModal({ isOpen, onClose, onSuccess }: { isOpen: boolean
       {step === "IMPORTING" && (
         <div className="flex flex-col items-center justify-center p-8 text-center">
           <div className="w-8 h-8 border-4 border-berry border-t-transparent rounded-full animate-spin mb-4" />
-          <h3 className="text-lg font-medium text-ink font-body">Importing Data...</h3>
+          <h3 className="text-lg font-medium text-ink font-body">Importing & Pooling Data...</h3>
           <p className="text-sm text-slate mt-2 font-mono">{progress.current} / {progress.total} rows processed.</p>
-          <p className="text-xs text-slate mt-4 italic">Merging clinic profiles and saving contact records...</p>
+          <p className="text-xs text-slate mt-4 italic">Merging clinic profiles and saving contact records safely...</p>
         </div>
       )}
     </Modal>
